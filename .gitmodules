@@ -19,3 +19,7 @@
 [submodule "3rd-party/editorconfig-vim"]
 	path = 3rd-party/editorconfig-vim
 	url = https://github.com/editorconfig/editorconfig-vim.git
+[submodule "3rd-party/icdiff"]
+	path = 3rd-party/icdiff
+	url = https://github.com/jeffkaufman/icdiff
+	branch = master
