@@ -69,26 +69,6 @@ unset to_path
 # If not running interactively, don't do anything
 [ -n "$PS1" ] || return
 
-# GPG
-#
-x="$HOME/.gpg-agent-info"
-if ! type -p gpg-agent > /dev/null; then
-	rm -f "$x"
-elif test -s "$x" &&
-	kill -0 $(cut -d: -f2 "$x" 2> /dev/null ) 2> /dev/null; then
-
-	. "$x"
-else
-	eval $(gpg-agent --daemon --log-file "$HOME/.gpg-agent.log" \
-		--write-env-file "$x" 2> /dev/null)
-
-fi
-if [ -s "$x" ]; then
-	export GPG_TTY=$(tty)
-	eval export $(cut -d= -f1 "$x")
-fi
-unset x
-
 # ssh wrapper
 #
 if [ -s "$HOME/bin/ssh" ]; then
