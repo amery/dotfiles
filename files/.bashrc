@@ -2,13 +2,14 @@
 
 export LANG="en_GB.UTF-8"
 
-# standarise $TERM
+# standardise $TERM
 case "${TERM:-}" in
 ""|"unknown") TERM=dumb ;;
 esac
 
-# PATH
-#
+# to_path <home> [bin] [VAR]
+#   add [bin] (default: <home>) to PATH.
+#   export <home> as $VAR if given.
 to_path() {
 	local d1="$1" d2="${2:-}" d3 n="${3:-}" base_dir
 
@@ -71,15 +72,13 @@ unset to_path
 
 # ssh wrapper
 #
-if [ -s "$HOME/bin/ssh" ]; then
+if [ -x "$HOME/bin/ssh" ]; then
 	SSH="$HOME/bin/ssh"
 else
 	SSH=ssh
 fi
 
-for x in GIT_SSH; do
-	eval export "$x=$SSH"
-done
+export GIT_SSH="$SSH"
 
 # debian/ubuntu development
 #
@@ -94,24 +93,31 @@ export EDITOR=vim
 # better utf-8 support
 export LESSCHARSET=utf-8
 
-# don't put duplicate lines in the history. See bash(1) for more options
-# ... or force ignoredups and ignorespace
+# history
 HISTCONTROL=ignoredups:ignorespace
-
-# append to the history file, don't overwrite it
 shopt -s histappend
-
-# for setting history length see HISTSIZE and HISTFILESIZE in bash(1)
 HISTSIZE=1000
 HISTFILESIZE=2000
 
-# support resize, please
+# support resize
 shopt -s checkwinsize
 
+# source file if it exists and is non-empty
+may_source() {
+	local f="$1"
+
+	case "$f" in
+	"~"/*) f="$HOME/${f#\~/}" ;;
+	/*)    ;;
+	*)     f="$HOME/$f" ;;
+	esac
+
+	[ -s "$f" ] || return 0
+	. "$f"
+}
+
 # get a nicer $PS1
-if [ -s $HOME/.bash/prompt.in ]; then
-	. $HOME/.bash/prompt.in
-fi
+may_source .bash/prompt.in
 
 # aliases
 #
@@ -121,16 +127,13 @@ alias gdb='gdb -quiet'
 alias vi='vi "+set encoding=utf-8"'
 
 [ "$(type -t ll)" != alias ] || unalias ll
-function ll() { ls -avhlF $* | less; }
+ll() { ls -avhlF "$@" | less; }
 
 # vi mode
 set -o vi
 
 # local settings
-for x in .bash/local.in /etc/bash_completion; do
-	expr "$x" : / > /dev/null || x="$HOME/$x"
-	 
-	if [ -s "$x" ]; then
-		. "$x"
-	fi
-done
+may_source .bash/local.in
+may_source /etc/bash_completion
+
+unset may_source
