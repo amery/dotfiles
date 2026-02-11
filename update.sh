@@ -4,7 +4,7 @@ set -u
 
 cd "$(dirname "$0")"
 
-branch="$(git branch | sed -n 's/^* \(.*\)$/\1/p;')"
+branch="$(git symbolic-ref --short HEAD 2>/dev/null)"
 [ -n "$branch" ] || exit
 
 remote=$(git config --get "branch.$branch.remote")

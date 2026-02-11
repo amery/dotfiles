@@ -35,7 +35,7 @@ esac
 D="/media/$USER/$N"
 if [ ! -d "$D/" ]; then
 	sudo mkdir -p "$D"
-	sudo chown $USER:$USER "$D"
+	sudo chown "$USER:$USER" "$D"
 fi
 
 case "$M" in

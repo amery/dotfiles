@@ -40,7 +40,7 @@ for x; do
 	#
 	d="${x%/*}"
 	if [ "$d" = "$x" ]; then
-	       d=
+		d=
 	elif [ ! -d "$HOME/$d/" ]; then
 		info "$d: creating dir"
 		mkdir -p "$HOME/$d/"
