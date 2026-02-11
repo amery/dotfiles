@@ -2,8 +2,72 @@
 
 export LANG="en_GB.UTF-8"
 
+# standarise $TERM
+case "${TERM:-}" in
+""|"unknown") TERM=dumb ;;
+esac
+
+# PATH
+#
+to_path() {
+	local d1="$1" d2="${2:-}" d3 n="${3:-}" base_dir
+
+	# HOME
+	case "$d1" in
+	"~"|"")    d1="$HOME" ;;
+	"~"/*)  d1="$HOME/${d1#\~/}" ;;
+	esac
+
+	[ -e "$d1" ] || return 1
+
+	if [ -d "$d1" ]; then
+		base_dir="$d1"
+	else
+		case "$d1" in
+		*/*) base_dir="${d1%/*}" ;;
+		*)   base_dir="." ;;
+		esac
+	fi
+
+	# bin dir
+	case "$d2" in
+	"~")      d2="$HOME" ;;
+	"~"/*)    d2="$HOME/${d2#\~/}" ;;
+	/*)       ;; # Absolute
+	./*|../*) ;; # Relative to CWD
+	"")       d2="$d1" ;; # Use d1 if d2 is empty
+	*)        d2="$base_dir/$d2" ;;
+	esac
+
+	[ -d "$d2/" ] || return 1
+
+	# normalize
+	d3="$(cd "$d2" 2>/dev/null && pwd -P)"
+	[ -d "$d3" ] || return 1
+
+	# PATH
+	case ":$PATH:" in
+	*":$d3:"*) : ;;
+	*)
+		export PATH="$d3:$PATH"
+		;;
+	esac
+
+	if [ -n "$n" ]; then
+		eval "$n=\"$d1\""
+		export "$n"
+	fi
+}
+
+to_path "~/.local/share/pnpm" "" PNPM_HOME
+to_path "~/.local/share/npm" "bin" NPM_HOME
+to_path "~/.local/bin"
+to_path "~/bin"
+
+unset to_path
+
 # If not running interactively, don't do anything
-[ -z "$PS1" ] && return
+[ -n "$PS1" ] || return
 
 # GPG
 #
@@ -34,7 +98,7 @@ else
 fi
 
 for x in GIT_SSH; do
-	eval export $x=$SSH
+	eval export "$x=$SSH"
 done
 
 # debian/ubuntu development
@@ -64,20 +128,10 @@ HISTFILESIZE=2000
 # support resize, please
 shopt -s checkwinsize
 
-# standarise $TERM
-case "$TERM" in
-	nxterm)
-		export TERM=xterm
-		;;
-	screen-256color|xterm-256color|screen|xterm|rxvt|linux)
-		;;
-	*)
-		echo "$TERM: Unknown TERM value."
-		;;
-esac
-
 # get a nicer $PS1
-[ -s $HOME/.bash/prompt.in ] && . $HOME/.bash/prompt.in
+if [ -s $HOME/.bash/prompt.in ]; then
+	. $HOME/.bash/prompt.in
+fi
 
 # aliases
 #
@@ -86,7 +140,7 @@ alias l='ls -avhlF'
 alias gdb='gdb -quiet'
 alias vi='vi "+set encoding=utf-8"'
 
-[ "$(type -t ll)" = alias ] && unalias ll
+[ "$(type -t ll)" != alias ] || unalias ll
 function ll() { ls -avhlF $* | less; }
 
 # vi mode
