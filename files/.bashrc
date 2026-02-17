@@ -60,8 +60,16 @@ to_path() {
 	fi
 }
 
+# pnpm
 to_path "~/.local/share/pnpm" "" PNPM_HOME
-to_path "~/.local/share/npm" "bin" NPM_HOME
+# npm
+if to_path "~/.local/share/npm" "bin" NPM_CONFIG_PREFIX; then
+	grep -q "^prefix=$NPM_CONFIG_PREFIX$" ~/.npmrc 2>/dev/null ||
+		npm config set prefix "$NPM_CONFIG_PREFIX"
+fi
+# python
+to_path "~/.local/share/python/main" "bin" PYTHON_VENV
+# misc
 to_path "~/.local/bin"
 to_path "~/bin"
 
@@ -69,6 +77,12 @@ unset to_path
 
 # If not running interactively, don't do anything
 [ -n "$PS1" ] || return
+
+# python aliases
+if [ -n "${PYTHON_VENV:-}" ]; then
+	alias venv=". $PYTHON_VENV/bin/activate"
+	alias unvenv="deactivate"
+fi
 
 # ssh wrapper
 #

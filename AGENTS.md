@@ -11,8 +11,11 @@ shell guard. Non-interactive sessions such as
 
 - `~/bin` -- utility scripts from this repo
 - `~/.local/bin` -- locally installed binaries
-- npm global binaries (via `NPM_HOME`)
+- npm global binaries (via `NPM_CONFIG_PREFIX`)
 - pnpm global binaries (via `PNPM_HOME`)
+- python virtualenv at `~/.local/share/python/main`
+  (via `PYTHON_VENV`), `venv`/`unvenv` aliases in
+  interactive shells
 
 You do not need to manually export `PATH`.
 
