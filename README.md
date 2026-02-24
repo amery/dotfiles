@@ -82,6 +82,7 @@ Configurations symlinked from `files/`:
 | `pcat`          | Filter and colorize pipelines |
 | `vcs_update`    | Pull and rebase any VCS repo  |
 | `tmux-reattach` | Attach or create tmux/screen  |
+| `tmux-here`     | Per-directory tmux session     |
 | `sshscreen`     | SSH with auto tmux attach     |
 | `moshscreen`    | Mosh with auto tmux attach    |
 | `sshloop`       | Reconnecting SSH wrapper      |

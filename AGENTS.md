@@ -50,6 +50,7 @@ Key scripts in `~/bin/`:
 | `repo-grep`      | Grep across repo workspace   |
 | `sshloop`        | Reconnecting SSH wrapper     |
 | `tmux-reattach`  | Attach or create tmux/screen |
+| `tmux-here`      | Per-directory tmux session    |
 | `getpem`         | Extract cert from TLS host   |
 
 ## Shell Conventions

@@ -1,0 +1,62 @@
+#!/bin/sh
+
+set -eu
+
+ME="${0##*/}"
+
+die() { echo "$ME: $*" >&2; exit 1; }
+
+# session_name <dir> <home>
+#   derive a tmux-safe session name from a directory
+session_name() {
+	local dir="$1" home="$2"
+
+	case "$dir" in
+	"$home")   printf '%s' "home" ;;
+	"$home"/*) printf '%s' "${dir#$home/}" ;;
+	*)         printf '%s' "$dir" | tr '/' '-' ;;
+	esac | tr '.:' '__'
+}
+
+# session_here_name
+#   session name for the current directory
+session_here_name() {
+	session_name "$(pwd -P)" "$(readlink -f "$HOME")"
+}
+
+# session_ensure <name> <dir>
+#   create the session if it doesn't exist
+session_ensure() {
+	tmux has-session -t "=$1" 2>/dev/null ||
+		tmux new-session -d -s "$1" -c "$2"
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-C)
+		[ $# -ge 2 ] || die "-C requires a directory"
+		cd "$2" 2>/dev/null || die "$2: invalid directory"
+		shift 2
+		;;
+	*)
+		break
+		;;
+	esac
+done
+
+case "$ME" in
+tmux-here|tmux-get-here) ;;
+*) die "unknown command" ;;
+esac
+
+name="$(session_here_name)"
+
+session_ensure "$name" "$PWD"
+
+if [ "$ME" = "tmux-get-here" ]; then
+	echo "$name"
+elif [ -n "${TMUX:-}" ]; then
+	exec tmux switch-client -t "=$name"
+else
+	exec tmux attach-session -t "=$name"
+fi
