@@ -16,16 +16,10 @@ set nu!
 set hlsearch
 
 if has("autocmd")
-	" OpenSDE
-	autocmd BufEnter *.in,*.conf,parse-config* set filetype=sh
-
 	autocmd BufEnter *.h set filetype=c
 
 	autocmd filetype c source ~/.vim/c.vim
 	autocmd filetype sh source ~/.vim/sh.vim
-	autocmd filetype xml source ~/.vim/xml.vim
-	autocmd filetype lua source ~/.vim/lua.vim
-"	autocmd filetype python source ~/.vim/python.vim
 endif
 
 " , #perl # comments
