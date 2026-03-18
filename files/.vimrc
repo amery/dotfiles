@@ -50,14 +50,14 @@ if has("autocmd")
 	autocmd filetype sh source ~/.vim/sh.vim
 endif
 
-" , #perl # comments
-map ,# :s/^/#/<CR>
+" --- Comment Toggles (Normal Mode) ---
+nnoremap ,# :s/^\(# \)\?/\=submatch(1)=='' ? '# ' : ''/<CR>:nohlsearch<CR>
+nnoremap ,/ :s/^\(\/\/ \)\?/\=submatch(1)=='' ? '\/\/ ' : ''/<CR>:nohlsearch<CR>
+nnoremap ,< :s/^\(\)$/\2/e <bar> s/^\(.*\)$//e<CR>:nohlsearch<CR>
+nnoremap ,* :s/^\(\/\* \)\(.*\)\( \*\/\)$/\2/e <bar> s/^\(.*\)$/\/\* \1 \*\//e<CR>:nohlsearch<CR>
 
-" ,/ C/C++/C#/Java // comments
-map ,/ :s/^/\/\//<CR>
-
-" ,< HTML comment
-map ,< :s/^\(.*\)$/<!-- \1 -->/<CR><Esc>:nohlsearch<CR>
-
-" c++ java style comments
-map ,* :s/^\(.*\)$/\/\* \1 \*\//<CR><Esc>:nohlsearch<CR>
+" --- Comment Toggles (Visual Mode) ---
+vnoremap ,# :s/^\(# \)\?/\=submatch(1)=='' ? '# ' : ''/<CR>:nohlsearch<CR>gv
+vnoremap ,/ :s/^\(\/\/ \)\?/\=submatch(1)=='' ? '\/\/ ' : ''/<CR>:nohlsearch<CR>gv
+vnoremap ,< :s/^\(\)$/\2/e <bar> s/^\(.*\)$//e<CR>:nohlsearch<CR>
+vnoremap ,* :s/^\(\/\* \)\(.*\)\( \*\/\)$/\2/e <bar> s/^\(.*\)$/\/\* \1 \*\//e<CR>:nohlsearch<CR>
