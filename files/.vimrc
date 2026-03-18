@@ -61,3 +61,21 @@ vnoremap ,# :s/^\(# \)\?/\=submatch(1)=='' ? '# ' : ''/<CR>:nohlsearch<CR>gv
 vnoremap ,/ :s/^\(\/\/ \)\?/\=submatch(1)=='' ? '\/\/ ' : ''/<CR>:nohlsearch<CR>gv
 vnoremap ,< :s/^\(\)$/\2/e <bar> s/^\(.*\)$//e<CR>:nohlsearch<CR>
 vnoremap ,* :s/^\(\/\* \)\(.*\)\( \*\/\)$/\2/e <bar> s/^\(.*\)$/\/\* \1 \*\//e<CR>:nohlsearch<CR>
+
+" Toggle set list (show/hide non-printable)
+nnoremap ,n :set list!<CR>
+
+" Line numbering: Absolute -> Relative -> None
+function! NumberToggle()
+    if(&relativenumber == 1)
+        set norelativenumber
+        set nonumber
+    elseif(&number == 1)
+        set relativenumber
+    else
+        set number
+    endif
+endfunc
+
+" Toggle line numbers
+nnoremap ,l :call NumberToggle()<CR>
