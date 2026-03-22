@@ -4,7 +4,7 @@ export LANG="en_GB.UTF-8"
 
 # standardise $TERM
 case "${TERM:-}" in
-""|"unknown") TERM=dumb ;;
+""|"unknown") export TERM=dumb ;;
 esac
 
 # to_path <home> [bin] [VAR]

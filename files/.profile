@@ -10,6 +10,22 @@ if [ -n "$BASH_VERSION" ]; then
 fi
 
 # set PATH so it includes user's private bin if it exists
-if [ -d "$HOME/bin" ]; then
-	export PATH="$HOME/bin:$PATH"
-fi
+to_path() {
+	local d1="$1" d2
+
+	[ -d "$d1" ] || return 1
+	d2="$(cd "$d1" 2>/dev/null && pwd -P)"
+	[ -d "$d2" ] || return 1
+
+	# PATH
+	case ":$PATH:" in
+	*":$d2:"*) : ;;
+	*)
+		export PATH="$d2:$PATH"
+		;;
+	esac
+}
+
+to_path "$HOME/bin"
+
+unset to_path
