@@ -57,17 +57,21 @@ acceptable keys:
 
 ## Managed Files
 
-Configurations symlinked from `files/`:
+Key configurations symlinked from `files/`:
 
 | File          | Purpose                       |
 |---------------|-------------------------------|
 | `.bashrc`     | Shell config, PATH, aliases   |
+| `.bash/`      | Prompt and local shell config |
 | `.profile`    | Login shell setup             |
 | `.gitconfig`  | Git identity, aliases, colors |
 | `.vimrc`      | Vim configuration             |
+| `.vim/`       | Vim runtime files             |
 | `.tmux.conf`  | Tmux configuration            |
 | `.screenrc`   | GNU Screen configuration      |
 | `.pbuilderrc` | Debian package builder        |
+
+See `files/` for the complete list.
 
 ## Utilities
 
@@ -78,17 +82,24 @@ Configurations symlinked from `files/`:
 |-----------------|-------------------------------|
 | `x`             | Find and run workspace entry  |
 | `icdiff`        | Side-by-side colored diff     |
+| `git-icdiff`    | icdiff as git diff driver     |
 | `colorize`      | Syntax-highlight any file     |
 | `pcat`          | Filter and colorize pipelines |
 | `vcs_update`    | Pull and rebase any VCS repo  |
+| `mkgit`         | Init repo with remote         |
+| `repo-find`     | Find files in repo workspace  |
+| `repo-grep`     | Grep across repo workspace    |
+| `repo-list`     | List git repos recursively    |
+| `repo-root`     | Print repo workspace root     |
 | `tmux-reattach` | Attach or create tmux/screen  |
-| `tmux-here`     | Per-directory tmux session     |
+| `tmux-here`     | Per-directory tmux session    |
 | `sshscreen`     | SSH with auto tmux attach     |
 | `moshscreen`    | Mosh with auto tmux attach    |
 | `sshloop`       | Reconnecting SSH wrapper      |
-| `mkgit`         | Init repo with remote         |
-| `repo-find`     | Find files in repo workspaces |
+| `getpem`        | Extract public key from TLS   |
 | `apt_upgrade`   | Full apt upgrade and cleanup  |
+
+See `files/bin/` for the full set of scripts.
 
 ## Submodules
 

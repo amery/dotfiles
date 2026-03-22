@@ -17,6 +17,10 @@ shell guard. Non-interactive sessions such as
   (via `PYTHON_VENV`), `venv`/`unvenv` aliases in
   interactive shells
 
+`.profile` independently adds `~/bin` to `PATH`
+for non-bash login shells (`dash`, `sh`) that do
+not source `.bashrc`.
+
 You do not need to manually export `PATH`.
 
 ## Workspace Entry Points
@@ -46,12 +50,17 @@ Key scripts in `~/bin/`:
 | `colorize`       | Syntax-highlight any file    |
 | `pcat`           | Filter and colorize pipeline |
 | `vcs_update`     | Pull and rebase any VCS repo |
+| `mkgit`          | Init repo with remote        |
 | `repo-find`      | Find files in repo workspace |
 | `repo-grep`      | Grep across repo workspace   |
+| `repo-list`      | List git repos recursively   |
+| `repo-root`      | Print repo workspace root    |
 | `sshloop`        | Reconnecting SSH wrapper     |
 | `tmux-reattach`  | Attach or create tmux/screen |
-| `tmux-here`      | Per-directory tmux session    |
-| `getpem`         | Extract cert from TLS host   |
+| `tmux-here`      | Per-directory tmux session   |
+| `getpem`         | Extract public key from TLS  |
+
+Run `ls ~/bin/` for the full list of scripts.
 
 ## Shell Conventions
 
@@ -102,10 +111,18 @@ The dotfiles repo is typically checked out at
 
 ## Sync
 
-`sync.sh` creates symlinks from `$HOME` into
-`files/`. If a file already exists in `$HOME`,
-it is imported into `files/` first, then replaced
-with a symlink.
+`sync.sh` creates symlinks in `$HOME` pointing
+into `files/`. When a target already exists in
+`$HOME`:
+
+- **Regular file**: imported into `files/`, then
+  replaced with a symlink.
+- **Non-empty directory**: moved into `files/` and
+  replaced with a symlink.
+- **Existing symlink**: relinked if it points
+  somewhere else.
+
+`sync_ssh.sh` runs automatically after every sync.
 
 To re-sync after changes:
 
@@ -120,10 +137,12 @@ submodules and runs `git reset --hard` afterward.
 ## SSH Keys
 
 The `.pub` files in `~/.ssh/` are an allowlist.
-`sync_ssh.sh` enforces it by removing any key
-from `authorized_keys` that does not match a
-`.pub` file. To revoke a key, delete its `.pub`
-file and run sync.
+`sync_ssh.sh` enforces it: keys in
+`authorized_keys` that do not match any `.pub`
+file are extracted to new `.pub` files (named
+after the key comment) and removed from
+`authorized_keys`. To revoke a key, delete its
+`.pub` file and run sync.
 
 ## Markdown Lint
 
