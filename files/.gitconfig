@@ -1,6 +1,12 @@
 [user]
 	name = Alejandro Mery
 	email = amery@geeks.cl
+	signingkey = 548E7E86E8F55842
+
+[commit]
+	gpgsign = true
+[tag]
+	gpgsign = true
 
 [color]
 	ui = auto

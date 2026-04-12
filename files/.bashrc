@@ -78,6 +78,13 @@ unset to_path
 # If not running interactively, don't do anything
 [ -n "$PS1" ] || return
 
+# GPG
+#
+if type -p gpgconf > /dev/null; then
+	export GPG_TTY=$(tty)
+	gpgconf --launch gpg-agent
+fi
+
 # python aliases
 if [ -n "${PYTHON_VENV:-}" ]; then
 	alias venv=". $PYTHON_VENV/bin/activate"
