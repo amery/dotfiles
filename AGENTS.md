@@ -95,6 +95,13 @@ vim: add editorconfig-vim support
 Do not capitalise the description. Do not end it
 with a period.
 
+Commits and tags are GPG-signed: `.gitconfig` sets
+`commit.gpgsign` and `tag.gpgsign` to `true` with a
+configured `user.signingkey`. A bare `git commit`
+will attempt to sign, so a working `gpg` agent must
+be available. Use `git commit -s` to add the
+`Signed-off-by` trailer as well.
+
 ## Dotfiles Are Symlinks
 
 Files in `$HOME` such as `.bashrc`, `.gitconfig`,
