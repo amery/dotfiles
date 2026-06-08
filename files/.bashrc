@@ -5,6 +5,7 @@ export LANG="en_GB.UTF-8"
 # standardise $TERM
 case "${TERM:-}" in
 ""|"unknown") export TERM=dumb ;;
+xterm-ghostty) export TERM=xterm-256color ;;
 esac
 
 # to_path <home> [bin] [VAR]
