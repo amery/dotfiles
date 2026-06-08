@@ -1,0 +1,125 @@
+#!/bin/sh
+#
+# git-set-user: set user.name, user.email and user.signingkey for a
+# repository (or globally) from the GnuPG secret key whose user ID
+# matches the given email address.
+
+set -eu
+
+PROG="git set-user"
+scope="--local"
+
+die() { echo "$PROG: $*" >&2; exit 1; }
+
+usage() {
+	cat <<EOF
+usage: $PROG [--global|--local] [<email>]
+       $PROG --list
+
+Set user.name, user.email and user.signingkey from the GnuPG secret
+key whose user ID matches <email>. With no <email>, the currently
+configured user.email is used. Defaults to the current repository
+(--local); pass --global to set the global identity instead.
+EOF
+}
+
+# die_usage prints an optional reason, then the usage, then exits 2.
+die_usage() {
+	[ $# -eq 0 ] || echo "$PROG: $*" >&2
+	usage >&2
+	exit 2
+}
+
+# list_identities emits "keyid<TAB>email<TAB>name" for every usable
+# user ID of every usable secret key. Revoked, expired and disabled
+# keys (and revoked or expired user IDs) are skipped -- field 2 of the
+# colon format carries the validity.
+list_identities() {
+	gpg --list-secret-keys --keyid-format=long --with-colons 2>/dev/null |
+		awk -F: '
+			$1 == "sec" {
+				key = $5
+				keyok = ($2 != "r" && $2 != "e" && $2 != "d")
+			}
+			$1 == "uid" {
+				if (!keyok || $2 == "r" || $2 == "e")
+					next
+				uid = $10
+				email = uid
+				sub(/^[^<]*</, "", email)
+				sub(/>.*$/, "", email)
+				name = uid
+				sub(/ *<[^>]*>.*$/, "", name)
+				sub(/ *\([^)]*\)$/, "", name)
+				if (email ~ /@/)
+					printf "%s\t%s\t%s\n", key, email, name
+			}
+		'
+}
+
+# list_identities_pretty prints the secret-key identities as an
+# aligned, de-duplicated table for humans, under a heading.
+list_identities_pretty() {
+	echo "available identities:"
+	list_identities | sort -u |
+		awk -F'\t' '{ printf "  %-32s %s\n", $2, $1 }'
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--global) scope="--global" ;;
+	--local) scope="--local" ;;
+	-l|--list)
+		list_identities_pretty
+		exit 0
+		;;
+	-h|--help) usage; exit 0 ;;
+	--) shift; break ;;
+	-*) die_usage "unknown option: $1" ;;
+	*) break ;;
+	esac
+	shift
+done
+
+if [ $# -gt 1 ]; then
+	die_usage "too many arguments"
+elif [ $# -eq 1 ]; then
+	email="$1"
+else
+	email="$(git config --get user.email || true)"
+	[ -n "$email" ] || die "no email given and user.email is not set"
+fi
+email="$(printf '%s' "$email" | tr '[:upper:]' '[:lower:]')"
+
+if [ "$scope" = "--local" ]; then
+	git rev-parse --git-dir >/dev/null 2>&1 ||
+		die "not inside a git repository (use --global for the global identity)"
+fi
+
+match=$(list_identities | awk -F'\t' -v want="$email" \
+	'tolower($2) == tolower(want) { print }')
+
+if [ -z "$match" ]; then
+	list_identities_pretty >&2
+	die "no GnuPG secret key with user ID <$email>"
+fi
+
+count=$(printf '%s\n' "$match" | wc -l | tr -d '[:space:]')
+if [ "$count" -ne 1 ]; then
+	printf '%s\n' "$match" |
+		awk -F'\t' '{ printf "  %s  %s\n", $1, $3 }' >&2
+	die "<$email> matches multiple secret keys (listed above)"
+fi
+
+key=$(printf '%s\n' "$match" | cut -f1)
+addr=$(printf '%s\n' "$match" | cut -f2)
+name=$(printf '%s\n' "$match" | cut -f3)
+
+git config "$scope" user.name "$name"
+git config "$scope" user.email "$addr"
+git config "$scope" user.signingkey "$key"
+
+echo "set ${scope#--} user:"
+echo "  name       $name"
+echo "  email      $addr"
+echo "  signingkey $key"

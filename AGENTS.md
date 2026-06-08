@@ -47,6 +47,7 @@ Key scripts in `~/bin/`:
 |------------------|------------------------------|
 | `icdiff`         | Side-by-side diff with color |
 | `git-icdiff`     | icdiff as git diff driver    |
+| `git-set-user`   | Set identity + signingkey    |
 | `colorize`       | Syntax-highlight any file    |
 | `pcat`           | Filter and colorize pipeline |
 | `vcs_update`     | Pull and rebase any VCS repo |
@@ -101,6 +102,14 @@ configured `user.signingkey`. A bare `git commit`
 will attempt to sign, so a working `gpg` agent must
 be available. Use `git commit -s` to add the
 `Signed-off-by` trailer as well.
+
+Use `git set-user [<email>]` to point a
+repository's identity -- `user.name`,
+`user.email` and `user.signingkey` -- at a
+matching GnuPG secret key; with no argument it
+re-derives them from the configured `user.email`.
+`git set-user --list` shows the available
+identities.
 
 ## Dotfiles Are Symlinks
 

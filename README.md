@@ -83,6 +83,7 @@ See `files/` for the complete list.
 | `x`             | Find and run workspace entry  |
 | `icdiff`        | Side-by-side colored diff     |
 | `git-icdiff`    | icdiff as git diff driver     |
+| `git-set-user`  | Set identity + signingkey     |
 | `colorize`      | Syntax-highlight any file     |
 | `pcat`          | Filter and colorize pipelines |
 | `vcs_update`    | Pull and rebase any VCS repo  |
