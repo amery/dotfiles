@@ -108,8 +108,10 @@ repository's identity -- `user.name`,
 `user.email` and `user.signingkey` -- at a
 matching GnuPG secret key; with no argument it
 re-derives them from the configured `user.email`.
-`git set-user --list` shows the available
-identities.
+When no secret key matches, the address is still
+set but `user.signingkey` is removed so commits
+are not signed with the wrong key. `git set-user
+--list` shows the available identities.
 
 ## Dotfiles Are Symlinks
 

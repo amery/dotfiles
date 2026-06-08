@@ -2,7 +2,9 @@
 #
 # git-set-user: set user.name, user.email and user.signingkey for a
 # repository (or globally) from the GnuPG secret key whose user ID
-# matches the given email address.
+# matches the given email address. When no secret key matches, the
+# address is still set but user.signingkey is removed so commits are
+# not signed with the wrong key.
 
 set -eu
 
@@ -17,9 +19,10 @@ usage: $PROG [--global|--local] [<email>]
        $PROG --list
 
 Set user.name, user.email and user.signingkey from the GnuPG secret
-key whose user ID matches <email>. With no <email>, the currently
-configured user.email is used. Defaults to the current repository
-(--local); pass --global to set the global identity instead.
+key whose user ID matches <email>. With no matching secret key the
+address is set and user.signingkey is removed. With no <email>, the
+currently configured user.email is used. Defaults to the current
+repository (--local); pass --global to set the global identity instead.
 EOF
 }
 
@@ -100,8 +103,15 @@ match=$(list_identities | awk -F'\t' -v want="$email" \
 	'tolower($2) == tolower(want) { print }')
 
 if [ -z "$match" ]; then
-	list_identities_pretty >&2
-	die "no GnuPG secret key with user ID <$email>"
+	# No usable secret key for this identity: set the address but
+	# remove any signing key so commits are not signed with a
+	# mismatched key. --unset exits 5 when nothing is set; ignore it.
+	git config "$scope" user.email "$email"
+	git config "$scope" --unset user.signingkey 2>/dev/null || true
+
+	echo "set ${scope#--} user (no secret key -- signing key removed):"
+	echo "  email      $email"
+	exit 0
 fi
 
 count=$(printf '%s\n' "$match" | wc -l | tr -d '[:space:]')
