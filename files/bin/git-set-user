@@ -103,13 +103,17 @@ match=$(list_identities | awk -F'\t' -v want="$email" \
 	'tolower($2) == tolower(want) { print }')
 
 if [ -z "$match" ]; then
-	# No usable secret key for this identity: set the address but
-	# remove any signing key so commits are not signed with a
-	# mismatched key. --unset exits 5 when nothing is set; ignore it.
+	# No usable secret key for this identity: set the address and
+	# disable signing at this scope. Unsetting user.signingkey is not
+	# enough -- an inherited signingkey plus commit.gpgsign=true would
+	# still force a (failing) signature -- so turn gpgsign off too.
+	# --unset exits 5 when nothing is set; ignore it.
 	git config "$scope" user.email "$email"
 	git config "$scope" --unset user.signingkey 2>/dev/null || true
+	git config "$scope" commit.gpgsign false
+	git config "$scope" tag.gpgsign false
 
-	echo "set ${scope#--} user (no secret key -- signing key removed):"
+	echo "set ${scope#--} user (no secret key -- signing disabled):"
 	echo "  email      $email"
 	exit 0
 fi
@@ -128,6 +132,8 @@ name=$(printf '%s\n' "$match" | cut -f3)
 git config "$scope" user.name "$name"
 git config "$scope" user.email "$addr"
 git config "$scope" user.signingkey "$key"
+git config "$scope" commit.gpgsign true
+git config "$scope" tag.gpgsign true
 
 echo "set ${scope#--} user:"
 echo "  name       $name"
