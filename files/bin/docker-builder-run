@@ -1,0 +1,690 @@
+#!/bin/sh
+#
+# Style noise parked to revisit:
+# - SC2155: `local x="$(cmd)"` masks the command's exit status; split
+#   the declarations from the assignments
+# shellcheck disable=SC2155
+
+set -eu
+
+RUN_VERSION="1.23.0"
+
+#
+#
+die() {
+	echo "$*" >&2
+	exit 1
+}
+
+#
+# grep_escape <string>
+# Escape a literal string for use in a grep BRE pattern.
+#
+grep_escape() {
+	printf '%s\n' "$*" | sed -e 's/[][\.*^$]/\\&/g'
+}
+
+#
+# safe_atomic_write <target_file> <command...>
+# Executes command, writes output to temp file, then atomically moves to target.
+# Cleans up temp file on failure. Returns command's exit status.
+#
+safe_atomic_write() {
+	local target="$1"
+	shift
+	local tmp="$(mktemp "${target}.XXXXXX")"
+
+	# $tmp must expand now, while we know the name — not when the trap fires
+	# shellcheck disable=SC2064
+	trap "rm -f '$tmp'" EXIT INT TERM
+
+	if "$@" > "$tmp"; then
+		mv "$tmp" "$target"
+		trap - EXIT INT TERM
+		return 0
+	else
+		trap - EXIT INT TERM
+		rm -f "$tmp"
+		return 1
+	fi
+}
+
+#
+# get_run_hook <docker_id>
+# Extracts run-hook.sh from image and cleans CRLF line endings
+#
+get_run_hook() {
+	local tmp="$(mktemp)"
+	local rc=0
+
+	docker run --rm "$1" --run-hook > "$tmp" || rc=$?
+	if [ $rc -eq 0 ]; then
+		tr -d '\r' < "$tmp"
+	fi
+	rm -f "$tmp"
+	return $rc
+}
+
+#
+# builder_from_bases <dockerfile>...
+# Emit, one per line, the external base images the given Dockerfiles
+# build FROM: each `FROM <image>` that names a real reference. Skips
+# `scratch`, --flag tokens (e.g. --platform=), ARG-substituted names we
+# cannot resolve here, and back-references to an earlier build stage
+# (FROM the name an earlier `AS` introduced). Empty or missing files
+# contribute nothing; stage tracking is per file.
+#
+builder_from_bases() {
+	local df=
+
+	for df; do
+		[ -s "$df" ] || continue
+
+		awk '
+		toupper($1) == "FROM" {
+			img = ""; as = ""
+			for (i = 2; i <= NF; i++) {
+				if ($i ~ /^--/) continue
+				if (img == "") { img = $i; continue }
+				if (toupper($i) == "AS") { as = $(i + 1); break }
+			}
+			if (img == "" || img == "scratch") next
+			if (img ~ /\$/) next         # unresolved ${ARG}
+			if (img in stage) next       # back-reference to a prior stage
+			print img
+			if (as != "") stage[as] = 1
+		}
+		' "$df"
+	done
+}
+
+#
+# docker_build <dir>
+# Builds image from Dockerfile in <dir>, sets DOCKER_ID on success.
+# Uses buildx when available, falls back to legacy docker build.
+#
+docker_build() {
+	local dir="$1"
+	local iidfile="$(mktemp)"
+	local rc=0 base=
+
+	if [ -n "${DOCKER_BUILD_FORCE:-}" ]; then
+		# Refresh the base image(s) by name before rebuilding. `buildx
+		# build --pull` fetches a newer base but records it under its
+		# digest only, leaving the local repo:tag on the old image — so
+		# the next non-forced build, which resolves that tag, keeps using
+		# the stale base. An explicit `docker pull` moves the named tag
+		# onto the new image; --no-cache below then rebuilds from it.
+		for base in $(builder_from_bases "$dir/Dockerfile"); do
+			docker pull "$base"
+		done
+	fi
+
+	set -- --iidfile "$iidfile"
+
+	if [ -n "${DOCKER_BUILD_FORCE:-}" ]; then
+		set -- "$@" --no-cache
+	fi
+
+	# DOCKER_BUILD_OPT is a user-supplied option string that must split into
+	# separate docker arguments
+	if docker buildx version >/dev/null 2>&1; then
+		# shellcheck disable=SC2086
+		set -- docker buildx build --builder default "$@" ${DOCKER_BUILD_OPT:-}
+	else
+		# shellcheck disable=SC2086
+		set -- docker build "$@" ${DOCKER_BUILD_OPT:---rm}
+	fi
+
+	"$@" "$dir" || rc=$?
+
+	if [ $rc -eq 0 ]; then
+		DOCKER_ID="$(cat "$iidfile")"
+	fi
+	rm -f "$iidfile"
+	return $rc
+}
+
+#
+#
+builder_brute_find() {
+	local op="$1" cue="$2"
+
+	while [ "$PWD" != / ]; do
+
+		if test "$op" "$PWD/$cue"; then
+			echo "$PWD"
+			break
+		fi
+
+		cd ..
+	done
+}
+
+#
+#
+builder_find_workspace() {
+	local ws= prev="$PWD" check="${1:-}"
+
+	# any .repo workspace wins
+	ws="$(builder_brute_find -d .repo)"
+	if [ ! -d "$ws" ]; then
+		while true; do
+			# try .git repositories
+			ws="$(git rev-parse --show-superproject-working-tree 2> /dev/null || true)"
+			[ -d "$ws" ] || ws="$(git rev-parse --show-toplevel 2> /dev/null || true)"
+
+			if [ ! -d "$ws" ]; then
+				# no deeper git-root, accept what we had
+				ws=
+				break
+			elif [ -z "$check" ]; then
+				# remember this git-root, but try deeper
+				prev="$ws"
+				cd "$ws/.."
+			elif $check "$ws"; then
+				# remember this git-root, but try deeper
+				prev="$ws"
+				cd "$ws/.."
+			elif [ "$ws" != / ]; then
+				# remember this git-root, but try deeper
+				prev="$ws"
+				cd "$ws/.."
+			else
+				# can't go deeper, just take it
+				break
+			fi
+		done
+	fi
+
+	echo "${ws:-$prev}"
+}
+
+#
+#
+builder_find_docker_dir() {
+	local run_sh="$1" dir="$2"
+
+	if [ -z "$dir" ]; then
+		dir="$(dirname "$run_sh")"
+
+		while [ ! -s "$dir/Dockerfile" ]; do
+			if [ -L "$run_sh" ]; then
+				# follow symlink
+				run_sh="$(readlink "$run_sh")"
+
+				case "$run_sh" in
+				/*)	;;
+				*)	run_sh="$(realpath "$dir/$run_sh")" ;;
+				esac
+
+				dir="$(dirname "$run_sh")"
+			else
+				die "$1: failed to detect Dockerfile"
+			fi
+		done
+
+	elif [ ! -s "$dir/Dockerfile" ]; then
+		die "$dir: invalid docker directory"
+	fi
+
+	echo "$dir"
+}
+
+#
+builder__filter_volumes() {
+	local list= match= m=
+	local d= n= prev= new=
+
+	while read -r d n; do
+		new=true
+
+		if match="$(echo "$list" | grep "^$d:")"; then
+			for m in $match; do
+				# known device, known base?
+
+				prev="${m#*:}"
+				if [ "$prev" = / ]; then
+					new=false
+				elif [ "$n" != "${n#"$prev"/}" ]; then
+					# literal prefix test — expr's regex match
+					# over-matched on metachars in paths
+					new=false
+				fi
+
+				$new || break
+			done
+		fi
+
+		if $new; then
+			list="${list:+$list
+}$d:$n"
+			echo "$n"
+		fi
+	done
+}
+
+builder_gen_filter_volumes() {
+	local k= v=
+
+	for k; do
+
+		case "$k" in
+		!*) v="${k#!}" ;;
+		*)  eval "v=\"\${$k:-}\"" ;;
+		esac
+
+		if [ -z "$v" ]; then
+			continue
+		elif [ -L "$v" ]; then
+			# a symlink contributes its resolved target plus the dir
+			# holding the link; a broken one can't be mounted, so warn
+			# and skip rather than feed a dead path to stat downstream
+			if [ -e "$v" ]; then
+				readlink -f "$v"
+				dirname "$v"
+			else
+				echo "skipping volume, broken symlink: $v" >&2
+			fi
+		elif [ -e "$v" ] || mkdir -p "$v"; then
+			# create a missing source before stat would drop it
+			echo "$v"
+		else
+			# can't be made — permission, or a file where a dir is
+			# needed — so warn and skip rather than abort the run
+			echo "skipping volume, cannot create source: $v" >&2
+		fi
+
+	done | sort -uV | grep -v "^$(grep_escape "$HOME")\$" | xargs -r stat -c '%d %n' | builder__filter_volumes
+	echo "$HOME"
+}
+
+#
+builder_gen_volumes() {
+	builder_gen_filter_volumes "$@" | sort -V | while read -r x; do
+		# every $x here exists and is a real path — the filter created
+		# any missing source and stat dropped what it could not.
+		# prevent root-owned mount points at $home_dir: pre-create the
+		# target as the workspace user, before the daemon makes it (root)
+		# while satisfying the bind. A file source needs a file target
+		# (touch); a directory source needs the directory (mkdir -p).
+		case "$x" in
+		"$HOME"/*|"$HOME")
+			x0="${x#"$HOME"}"
+			x1="$home_dir$x0"
+			if [ -f "$x" ]; then
+				mkdir -p "${x1%/*}"
+				[ -e "$x1" ] || touch "$x1"
+			else
+				mkdir -p "$x1"
+			fi
+			;;
+		esac
+
+		# render -v pairs
+		case "$x" in
+		"$HOME")
+			echo "-v \"$home_dir:$x\""
+			;;
+		*)
+			echo "-v \"$x:$x\""
+			;;
+		esac
+	done | tr '\n' ' '
+}
+
+#
+builder_gen_env() {
+	local x= v=
+	for x; do
+		eval "v=\"\${$x:-}\""
+		if [ -n "$v" ]; then
+			echo "-e \"$x=$v\""
+		fi
+	done | tr '\n' ' '
+}
+
+#
+# builder_driver_oneshot
+# Run the command in a disposable container, replacing this process.
+# Takes the assembled docker run options, image and command as "$@";
+# reads WS, HOME, the USER_* identity and DOCKER_RUN_TTY from the
+# calling scope.
+#
+builder_driver_oneshot() {
+	set -- -i ${DOCKER_RUN_TTY:+-t} "$@"
+
+	set -x
+	exec docker run --rm \
+		--label "docker-builder.workspace=$WS" \
+		-e USER_HOME="$HOME" \
+		-e USER_NAME="$USER_NAME" \
+		-e USER_UID="$USER_UID" \
+		-e USER_GID="$USER_GID" \
+		-e CURDIR="$PWD" \
+		-e WS="$WS" \
+		"$@"
+}
+
+#
+# builder_run_exec
+# Assemble the docker run option set — bind mounts, pass-through
+# environment, debug capabilities — decide the tty allocation, and
+# hand the result to the driver.
+#
+builder_run_exec() {
+	local home_dir=
+	local WS="$1"
+	shift 1
+
+	# preserve user identity
+	local USER_NAME="$(id -urn)"
+	local USER_UID="$(id -ur)"
+	local USER_GID="$(id -gr)"
+
+	if [ -z "${HOME:-}" ]; then
+		HOME="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+	fi
+
+	# hook to extend run.sh before mounting volumes or exporting variables
+	#
+	if [ -d "${DOCKER_DIR:-}" -a -s "${DOCKER_DIR:-}/run-hook.sh" ]; then
+		# a per-workspace file, not present at lint time
+		# shellcheck disable=SC1091
+		. "$DOCKER_DIR/run-hook.sh"
+	fi
+
+	# persistent volumes
+	#
+	if [ -z "${DOCKER_RUN_CACHEDIR:-}" ]; then
+		DOCKER_RUN_CACHEDIR="$WS/.docker-run-cache"
+	fi
+
+	home_dir="$DOCKER_RUN_CACHEDIR$HOME"
+
+	# add more options
+	#
+	# volumes -> -v
+	# gen_env -> -e
+	#
+	# the *_VOLUMES / *_ENV / EXTRA_OPTS lists are space-separated and must
+	# split into separate arguments for the gen helpers and the option set
+	# shellcheck disable=SC2086
+	eval "set -- \
+		$(builder_gen_volumes ${DOCKER_RUN_VOLUMES:-} HOME PWD WS) \
+		$(builder_gen_env ${DOCKER_RUN_ENV:-}) \
+		${DOCKER_EXTRA_OPTS:-} \
+		\"\$@\""
+
+	# PTRACE
+	set -- \
+		--cap-add SYS_PTRACE \
+		--security-opt apparmor:unconfined \
+		--security-opt seccomp:unconfined \
+		"$@"
+
+	# isatty() — the drivers render the tty flags from this
+	if [ -t 0 ]; then
+		DOCKER_RUN_TTY=true
+	else
+		DOCKER_RUN_TTY=
+	fi
+
+	# and finally run within the container
+	builder_driver_oneshot "$@"
+}
+
+# labels
+#
+docker__labels() {
+	docker inspect --format "{{range \$Key, \$Value := .Config.Labels}}{{\$Key}}={{\$Value}}:{{end}}" "$1" | tr ':' '\n'
+	echo "docker-builder.version.run=$RUN_VERSION"
+}
+
+docker_labels() {
+	docker__labels "$1" | sed '/^[ \t]*$/d;' | sort -uV
+}
+
+docker_label() {
+	docker__labels "$1" | grep "^$(grep_escape "$2")=" | cut -d= -f2-
+}
+
+docker_env_labels() {
+	docker__labels "$1" | grep '^docker-builder\.run-env\.' | cut -d= -f2- | tr ' ' '\n' | sort -u
+}
+
+docker_bind_labels() {
+	docker__labels "$1" | grep '^docker-builder\.run-bind\.' | cut -d= -f2- | tr ' ' '\n' | sort -u
+}
+
+docker_version_labels() {
+	docker__labels "$1" | grep '^docker-builder\.version\.' | cut -d. -f3- | sort -V
+}
+
+#
+# builder_build
+# Resolve the image to run: build from DOCKER_DIR, or pull when forced.
+# Then refresh the workspace run-hook.sh when the image's embedded copy
+# differs, and read the label sets the exec phase consumes. Sets the
+# DOCKER_ID, DOCKER_DIR, DOCKER_ENV_LABELS and DOCKER_VERSION_LABELS
+# globals.
+#
+builder_build() {
+	# DOCKER_ID
+	if [ -z "${DOCKER_ID:-}" ]; then
+		DOCKER_DIR="$(builder_find_docker_dir "$0" "${DOCKER_DIR:-}")"
+
+		if [ -d "$DOCKER_DIR" ]; then
+			docker_build "$DOCKER_DIR"
+		fi
+	elif [ -n "${DOCKER_BUILD_FORCE:-}" ]; then
+		docker pull "$DOCKER_ID"
+	fi
+
+	# Auto-update run-hook.sh from image if SHA256 mismatches
+	#
+	if [ -d "${DOCKER_DIR:-}" ]; then
+		image_sha=$(docker_label "$DOCKER_ID" 'docker-builder.run-hook.sha256')
+
+		if [ -n "$image_sha" -a "$image_sha" != "-" -a "$image_sha" != "disabled" ]; then
+			hook_file="$DOCKER_DIR/run-hook.sh"
+			workspace_sha=""
+
+			if [ -f "$hook_file" ]; then
+				workspace_sha=$(sha256sum "$hook_file" | cut -d' ' -f1)
+			fi
+
+			if [ "$image_sha" != "$workspace_sha" ]; then
+				if safe_atomic_write "$hook_file" get_run_hook "$DOCKER_ID"; then
+					echo "Updated $hook_file from image" >&2
+				fi
+			fi
+		fi
+	fi
+
+	DOCKER_ENV_LABELS="$(docker_env_labels "$DOCKER_ID")"
+	# TODO: gathered but never consumed — decide whether this is dead or
+	# pending a consumer
+	# shellcheck disable=SC2034
+	DOCKER_VERSION_LABELS="$(docker_version_labels "$DOCKER_ID")"
+}
+
+#
+# builder_prepare
+# Assemble the run context the exec phase consumes: the pass-through
+# environment from the image's run-env labels, the bind mounts the
+# image requests, the run modes, the workspace root and its per-mode
+# initialisation, and the port mappings. Sets the DOCKER_RUN_ENV,
+# DOCKER_RUN_VOLUMES, DOCKER_RUN_MODE, DOCKER_RUN_WS and
+# DOCKER_EXTRA_OPTS globals.
+#
+builder_prepare() {
+	# pass-through environment
+	#
+	for x in $DOCKER_ENV_LABELS USER_IS_SUDO; do
+		DOCKER_RUN_ENV="${DOCKER_RUN_ENV:+$DOCKER_RUN_ENV }$x"
+	done
+
+	# -v requested by the image itself
+	#
+	for x in $(docker_bind_labels "$DOCKER_ID"); do
+		case "$x" in
+		/tmp/.X11-unix)
+			if [ -d "$x" ]; then
+				DOCKER_RUN_VOLUMES="${DOCKER_RUN_VOLUMES:+$DOCKER_RUN_VOLUMES }!$x"
+			else
+				die "docker-builder.run-bind: '$x' directory not found"
+			fi
+			;;
+		*)
+			die "docker-builder.run-bind: '$x' not supported"
+			;;
+		esac
+	done
+
+	# detect run mode
+	#
+	DOCKER_RUN_MODE=
+	for x in $DOCKER_ENV_LABELS; do
+
+		case "$x" in
+		GOPATH)
+			x=golang ;;
+		NPM_CONFIG_PREFIX)
+			x=nodejs ;;
+		DISPLAY)
+			x=x11 ;;
+		*)
+			continue ;;
+		esac
+
+		if ! echo "$DOCKER_RUN_MODE" | grep -q "^$x\$"; then
+			DOCKER_RUN_MODE="${DOCKER_RUN_MODE:+$DOCKER_RUN_MODE
+}$x"
+		fi
+	done
+
+	# find root of the "workspace"
+	#
+	if [ ! -d "${DOCKER_RUN_WS:-}" ]; then
+		CHECKER=
+
+		for x in $DOCKER_RUN_MODE; do
+			case "$x" in
+			golang)
+				f="test -d %/pkg"
+				CHECKER="${CHECKER:+$CHECKER && }$f"
+				;;
+			nodejs)
+				f="test -d %/node_modules -o -d %/lib/node_modules"
+				CHECKER="${CHECKER:+$CHECKER && }$f"
+				;;
+			esac
+		done
+
+		if [ -n "$CHECKER" ]; then
+			# the "$1" is literal sed-replacement text baked into the generated
+			# check_ws body — it must NOT expand here, so single quotes are right
+			# shellcheck disable=SC2016
+			eval "check_ws() { $(echo "$CHECKER" | sed -e 's|%|"$1"|g'); }"
+			CHECKER=check_ws
+		fi
+
+		# CHECKER is a single checker name or empty; :+ passes it as one arg when
+		# set and nothing when empty — no word-splitting, no SC2086
+		DOCKER_RUN_WS=$(builder_find_workspace ${CHECKER:+"$CHECKER"})
+	fi
+
+	# initialise workspace based on run mode
+	for x in $DOCKER_RUN_MODE; do
+		case "$x" in
+		golang)
+			[ -d "${GOPATH:-}" ] || GOPATH="$DOCKER_RUN_WS"
+			mkdir -p "$GOPATH/bin" "$GOPATH/src" "$GOPATH/pkg"
+
+			DOCKER_RUN_VOLUMES="${DOCKER_RUN_VOLUMES:+$DOCKER_RUN_VOLUMES } GOPATH"
+			;;
+		nodejs)
+			DOCKER_RUN_VOLUMES="${DOCKER_RUN_VOLUMES:+$DOCKER_RUN_VOLUMES } NPM_CONFIG_PREFIX"
+			;;
+		x11)
+			[ -n "${DISPLAY:-}" -a -d /tmp/.X11-unix -a -d /dev/snd ] || die "x11: mode not available"
+
+			DOCKER_RUN_VOLUMES="${DOCKER_RUN_VOLUMES:+$DOCKER_RUN_VOLUMES }!/tmp/.X11-unix"
+			DOCKER_EXTRA_OPTS="${DOCKER_EXTRA_OPTS:+$DOCKER_EXTRA_OPTS }--device /dev/snd"
+
+			if [ -d /dev/dri ]; then
+				DOCKER_RUN_VOLUMES="${DOCKER_RUN_VOLUMES:+$DOCKER_RUN_VOLUMES }!/dev/dri"
+			fi
+		esac
+	done
+
+	# port expose
+	#
+	for x in ${DOCKER_EXPOSE:-}; do
+
+		case "$x" in
+		*:*/*)  ;;
+		*/*)    x="${x%/*}:$x" ;;
+		*)      x="$x:$x/tcp" ;;
+		esac
+
+		export DOCKER_EXTRA_OPTS="${DOCKER_EXTRA_OPTS:+$DOCKER_EXTRA_OPTS }-p $x"
+	done
+}
+
+# When sourced as a library — e.g. by tests exercising the builder_*
+# helpers — stop here: the functions above are defined, but the main
+# execution below is skipped. A normal run leaves the guard unset.
+[ -z "${DOCKER_BUILDER_RUN_LIB:-}" ] || return 0
+
+# special options
+#
+USER_IS_SUDO=
+# the mode this script works in, not necessarily the mode the container
+# works in: empty = run one-shot, `labels` = print the label set. NOT
+# the per-image toolchain modes — those are DOCKER_RUN_MODE.
+RUN_MODE=
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-V)	cat <<-EOT >&2
+		docker-builder-run $RUN_VERSION
+		https://github.com/amery/docker-builder
+		EOT
+		exit 1 ;;
+	-l)	RUN_MODE=labels
+		;;
+
+	--pull) DOCKER_BUILD_FORCE=true ;;
+	-r)
+		# consumed by name via the DOCKER_RUN_ENV list — builder_gen_env
+		# evals it when rendering the -e options
+		# shellcheck disable=SC2034
+		USER_IS_SUDO=true ;;
+	-p)	DOCKER_EXPOSE="${DOCKER_EXPOSE:+$DOCKER_EXPOSE }$2"
+		shift ;;
+	-x)	set -x ;;
+	--)	shift; break ;;
+	*)	break ;;
+	esac
+	shift
+done
+
+# build / resolve the image
+#
+builder_build
+
+# -l: show the resolved image's labels and stop
+#
+if [ "$RUN_MODE" = labels ]; then
+	docker_labels "$DOCKER_ID"
+	exit 0
+fi
+
+# assemble the run context
+#
+builder_prepare
+
+# run
+#
+builder_run_exec "$DOCKER_RUN_WS" "$DOCKER_ID" "$@"
