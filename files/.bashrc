@@ -83,7 +83,15 @@ unset to_path
 #
 if type -p gpgconf > /dev/null; then
 	export GPG_TTY=$(tty)
-	gpgconf --launch gpg-agent
+	: "${GNUPGHOME:=$HOME/.gnupg}"
+	export GNUPGHOME
+	# gpg refuses a homedir that group/other can access
+	[ ! -d "$GNUPGHOME" ] || chmod go-rwx "$GNUPGHOME"
+	# only start a local agent off-SSH; forwarding hosts use the
+	# tunnelled agent (see .gnupg/gpg.conf no-autostart)
+	case "${SSH_CONNECTION:-}" in
+	"") gpgconf --launch gpg-agent ;;
+	esac
 fi
 
 # python aliases

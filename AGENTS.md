@@ -113,6 +113,64 @@ set but `user.signingkey` is removed so commits
 are not signed with the wrong key. `git set-user
 --list` shows the available identities.
 
+## GPG Agent Forwarding
+
+On remote hosts the private keys are never copied.
+The laptop's `gpg-agent` is forwarded over SSH, so
+signing happens on the laptop while `git` runs on
+the remote.
+
+On the client, forward the laptop's restricted
+`extra` socket onto the remote's standard socket
+(`~/.ssh/config` for that host):
+
+<!-- markdownlint-disable MD013 -->
+
+```text
+RemoteForward /run/user/1000/gnupg/S.gpg-agent /run/user/1000/gnupg/S.gpg-agent.extra
+```
+
+<!-- markdownlint-enable MD013 -->
+
+On the remote, let the forward replace an existing
+socket file (`/etc/ssh/sshd_config.d/*.conf`, needs
+root, then reconnect):
+
+```text
+StreamLocalBindUnlink yes
+```
+
+Import the public keys on the remote. The forwarded
+socket carries private keys by keygrip only -- it
+has no user IDs -- so `git set-user` cannot match an
+address until the matching public key is in the
+keyring. `bootstrap.sh` imports the shipped
+`files/.gnupg/*.asc`; by hand it is:
+
+```sh
+gpg --import ~/.gnupg/*.asc
+```
+
+Stop a stray `gpg` from clobbering the tunnel. Any
+`gpg` call starts a local agent when none answers,
+and that agent binds the standard socket -- unlinking
+the forwarded one and leaving a key-less agent in its
+place. The shipped `gpg.conf` sets `no-autostart` to
+prevent this, so a forward gap makes `gpg` fail
+loudly instead of replacing the tunnel. A local agent
+is only ever started explicitly (`.bashrc` or
+systemd), where one is actually wanted.
+
+The forward only binds at connection time, so
+reconnect after any change. To verify it is live:
+
+- `gpg-connect-agent 'keyinfo --list' /bye` reports
+  restricted mode, not a list of keygrips.
+- `gpg --list-secret-keys` shows the keys with a `>`
+  stub.
+- `echo test | gpg --clearsign` succeeds and the
+  pinentry prompt appears on the laptop.
+
 ## Dotfiles Are Symlinks
 
 Files in `$HOME` such as `.bashrc`, `.gitconfig`,
