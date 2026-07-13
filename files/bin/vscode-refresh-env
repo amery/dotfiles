@@ -1,0 +1,152 @@
+#!/bin/sh
+#
+# vscode-refresh-env — emit shell to refresh this shell's stale VSCode /
+# Remote-Containers env (SSH_AUTH_SOCK, VSCODE_IPC_HOOK_CLI, GIT_ASKPASS, …)
+# from the live window that owns the current pane.
+#
+#   eval "$(vscode-refresh-env)"        # refresh this shell + future panes
+#
+# Resolution is by process parenthood, not socket probing — a process that
+# is actually running is the liveness proof:
+#
+#   * no tmux : the calling shell descends straight from its VSCode
+#               integrated terminal, so climb its own parent chain.
+#   * in tmux : the pane shell is parented to the tmux daemon (its pid is
+#               field 2 of $TMUX), which is shared across every window, so
+#               climbing the shell dead-ends there. Bridge across it via
+#               the tty of the client currently showing this pane, then
+#               climb from that client.
+#
+# In both cases we climb to the topmost ancestor still carrying the window
+# env — the integrated-terminal shell — and read its /proc/<pid>/environ.
+# When no live window owns the pane (detached session, plain SSH login),
+# every managed var is `unset` so nothing stale lingers — except
+# SSH_AUTH_SOCK and DISPLAY, which have non-VSCode providers (a forwarded
+# agent, X11) and so are only ever refreshed, never cleared.
+#
+# Under tmux we also push each value into the *session* environment
+# (`set-environment`, session-scoped — not -g, so windows don't cross-
+# contaminate), so panes opened later in this session are born correct.
+
+# `local` is honoured by every real /bin/sh (dash, busybox ash, ksh, …);
+# the POSIX-purity note (SC3043) is noise, so silence it file-wide below.
+# shellcheck disable=SC3043
+set -eu
+
+ME="${0##*/}"
+die() { echo "$ME: $*" >&2; exit 1; }
+
+# parent <pid> — pid of the parent, empty if gone. Pipeline ends in tr so
+# the status is always 0 (a missing pid yields empty, not a failure).
+parent() { ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '; }
+
+# has_window_env <pid> — true iff this process carries the window env.
+has_window_env() {
+	tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null |
+		grep -q '^VSCODE_IPC_HOOK_CLI='
+}
+
+# sq <string> — single-quote for safe eval.
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\''/g")"; }
+
+# climb <pid> — the topmost contiguous ancestor (starting at <pid>) whose
+# environ carries the window env. Empty if none in the chain.
+climb() {
+	local pid="$1" found=''
+	while [ "${pid:-0}" -gt 1 ] 2>/dev/null; do
+		if has_window_env "$pid"; then
+			found=$pid
+		elif [ -n "$found" ]; then
+			break
+		fi
+		pid=$(parent "$pid")
+	done
+	printf '%s' "$found"
+}
+
+# tmux_client_pid — pid of the tmux client currently showing this pane,
+# resolved by its tty; falls back to the session's most recently active
+# client. Empty when nothing is attached.
+tmux_client_pid() {
+	local sess ctty
+	sess=$(tmux display-message -p '#{session_name}' 2>/dev/null) || return 0
+	ctty=$(tmux display-message -p '#{client_tty}' 2>/dev/null) || ctty=''
+	tmux list-clients -t "$sess" \
+		-F '#{client_activity} #{client_tty} #{client_pid}' 2>/dev/null |
+		sort -rn |
+		awk -v t="$ctty" 'NR==1 {first=$3} $2==t {print $3; f=1; exit}
+		                  END {if (!f) print first}'
+}
+
+[ $# -eq 0 ] || die "takes no arguments"
+
+# The window env we manage. GPG_TTY/COLORTERM are deliberately omitted:
+# they are shell-local, not window-owned.
+set -- \
+	BROWSER \
+	DISPLAY \
+	GIT_ASKPASS \
+	REMOTE_CONTAINERS_DISPLAY_SOCK \
+	REMOTE_CONTAINERS_IPC \
+	REMOTE_CONTAINERS_SOCKETS \
+	SSH_AUTH_SOCK \
+	VSCODE_GIT_ASKPASS_EXTRA_ARGS \
+	VSCODE_GIT_ASKPASS_MAIN \
+	VSCODE_GIT_ASKPASS_NODE \
+	VSCODE_GIT_IPC_HANDLE \
+	VSCODE_IPC_HOOK_CLI
+
+# in_tmux drives the session-environment push; keep it as a `||` guard so
+# `set -e` does not trip on the false branch of an `&&`.
+in_tmux=1
+[ -n "${TMUX:-}" ] || in_tmux=0
+
+if [ "$in_tmux" = 1 ]; then
+	start=$(tmux_client_pid) || true   # a tmux hiccup must not abort us
+else
+	start=$PPID          # the shell that ran us (via eval / directly)
+fi
+
+src=$(climb "${start:-}")
+
+# is_setonly <name> — true for managed vars with legitimate non-VSCode
+# providers (a forwarded SSH agent, an X11 display). We refresh them from a
+# live window but never unset them, so running this from a plain SSH login
+# does not tear down agent or X11 forwarding.
+is_setonly() {
+	case "$1" in
+	DISPLAY|SSH_AUTH_SOCK) return 0 ;;
+	esac
+	return 1
+}
+
+# emit_set/emit_unset — refresh the calling shell, and (under tmux) the
+# session environment so later panes inherit the same value.
+emit_set() {
+	printf 'export %s=%s\n' "$1" "$(sq "$2")"
+	[ "$in_tmux" = 1 ] || return 0
+	printf 'tmux set-environment %s %s\n' "$1" "$(sq "$2")"
+}
+emit_unset() {
+	printf 'unset %s\n' "$1"
+	[ "$in_tmux" = 1 ] || return 0
+	printf 'tmux set-environment -u %s\n' "$1"
+}
+
+if [ -z "$src" ]; then
+	echo "$ME: no live VSCode window owns this pane; clearing stale vars" >&2
+	for v; do
+		is_setonly "$v" || emit_unset "$v"
+	done
+	exit 0
+fi
+
+for v; do
+	line=$(tr '\0' '\n' < "/proc/$src/environ" 2>/dev/null | grep -m1 "^$v=") \
+		|| line=''
+	if [ -n "$line" ]; then
+		emit_set "$v" "${line#*=}"          # present-but-empty stays exported
+	else
+		is_setonly "$v" || emit_unset "$v"  # absent → cleared (bar set-only)
+	fi
+done

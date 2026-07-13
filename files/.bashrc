@@ -156,6 +156,14 @@ alias l='ls -avhlF'
 alias gdb='gdb -quiet'
 alias vi='vi "+set encoding=utf-8"'
 
+# run make/go offline against the module cache (no proxy, no sumdb, no
+# toolchain download): go-cached make ...
+alias go-cached='env GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local'
+
+# refresh stale VSCode / Remote-Containers env from the live window that
+# owns this pane.
+alias vsr='eval "$(vscode-refresh-env)"'
+
 [ "$(type -t ll)" != alias ] || unalias ll
 ll() { ls -avhlF "$@" | less; }
 
