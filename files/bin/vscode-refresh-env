@@ -27,6 +27,16 @@
 # Under tmux we also push each value into the *session* environment
 # (`set-environment`, session-scoped — not -g, so windows don't cross-
 # contaminate), so panes opened later in this session are born correct.
+#
+# And under tmux we repoint the session working directory (what a new
+# window inherits) at wherever this ran, via `attach-session -c` — tmux has
+# no direct setter for it. Closing that command's stdin makes it apply -c
+# and then bail before it can grab a terminal, so no client switch and no
+# tripping the nested-session guard (TMUX stays set). It is independent of
+# the window env, so it happens even on a detached session or plain SSH
+# login; only where this ran matters, never where the session was first
+# created. The ^A r "reload" binding runs this from the pane's directory
+# (see .tmux.conf), so a reload refreshes the session env and CWD together.
 
 # `local` is honoured by every real /bin/sh (dash, busybox ash, ksh, …);
 # the POSIX-purity note (SC3043) is noise, so silence it file-wide below.
@@ -132,6 +142,25 @@ emit_unset() {
 	[ "$in_tmux" = 1 ] || return 0
 	printf 'tmux set-environment -u %s\n' "$1"
 }
+
+# emit_cwd — repoint the tmux session working directory (what a new window
+# inherits) at wherever this ran. attach-session -c is tmux's only lever
+# for it; with stdin closed it applies -c then bails before it can grab a
+# terminal (see the header). Outside tmux there is no session, so no-op.
+emit_cwd() {
+	local sid dir
+	[ "$in_tmux" = 1 ] || return 0
+	sid=$(tmux display-message -p '#{session_id}' 2>/dev/null) || return 0
+	dir=$(pwd) || return 0
+	[ -n "$sid" -a -n "$dir" ] || return 0
+	printf 'tmux attach-session -c %s -t %s <&- >/dev/null 2>&1 || true\n' \
+		"$(sq "$dir")" "$(sq "$sid")"
+}
+
+# Repoint the session CWD independently of the window env below — wanted
+# even on a detached session or plain SSH login, hence before the no-window
+# early exit.
+emit_cwd
 
 if [ -z "$src" ]; then
 	echo "$ME: no live VSCode window owns this pane; clearing stale vars" >&2
