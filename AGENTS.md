@@ -3,6 +3,43 @@
 Instructions for AI agents operating on machines
 where these dotfiles are deployed.
 
+## Dotfiles Are Symlinks
+
+Files in `$HOME` such as `.bashrc`, `.gitconfig`,
+and `.vimrc` are symlinks into this repository
+under `files/`.
+
+**Do not copy or overwrite files in `$HOME`.**
+Edit the source in the dotfiles checkout instead.
+The symlink ensures `$HOME` sees the change
+immediately.
+
+The dotfiles repo is typically checked out at
+`~/projects/dotfiles`.
+
+`sync.sh` creates the symlinks. When a target
+already exists in `$HOME`:
+
+- **Regular file**: imported into `files/`, then
+  replaced with a symlink.
+- **Non-empty directory**: moved into `files/` and
+  replaced with a symlink.
+- **Existing symlink**: relinked if it points
+  somewhere else.
+
+`sync_ssh.sh` runs automatically after every sync.
+
+To re-sync after changes (the script changes to
+its own directory, no `cd` needed):
+
+```sh
+~/projects/dotfiles/sync.sh
+```
+
+`bootstrap.sh` does the same but also initialises
+submodules, imports the shipped GPG public keys,
+and runs `git reset --hard` afterward.
+
 ## Environment
 
 `.bashrc` sets up `PATH` before the interactive
@@ -39,12 +76,13 @@ checking `.repo` workspaces first, then git
 repositories, looking for an executable `run.sh`
 at the root.
 
-## Available Tools
+## Scripts
 
 Key scripts in `~/bin/`:
 
 | Script           | Purpose                      |
 |------------------|------------------------------|
+| `x`              | Run a workspace's `run.sh`   |
 | `icdiff`         | Side-by-side diff with color |
 | `git-icdiff`     | icdiff as git diff driver    |
 | `git-set-user`   | Set identity + signingkey    |
@@ -69,7 +107,9 @@ Follow these when writing or modifying shell
 scripts in this repository:
 
 - Start with `#!/bin/sh` and `set -eu`
-- Use `||` guards, not `&&` (breaks `set -e`)
+- Use `||` guards, not `&&`: with `set -e`, a
+  trailing `check && action` aborts the script
+  when the check fails
 - Use `${VAR:-}` for potentially unset variables
 - Use `case` over `if/elif` for string matching
 - Quote all variable expansions
@@ -120,6 +160,8 @@ The laptop's `gpg-agent` is forwarded over SSH, so
 signing happens on the laptop while `git` runs on
 the remote.
 
+### One-Time Setup
+
 On the client, forward the laptop's restricted
 `extra` socket onto the remote's standard socket
 (`~/.ssh/config` for that host):
@@ -140,16 +182,28 @@ root, then reconnect):
 StreamLocalBindUnlink yes
 ```
 
+Also on the remote, stop systemd from binding the
+standard socket: socket activation starts a local
+agent on first use, displacing the forward.
+
+```sh
+systemctl --user mask gpg-agent.socket gpg-agent.service
+```
+
 Import the public keys on the remote. The forwarded
 socket carries private keys by keygrip only -- it
 has no user IDs -- so `git set-user` cannot match an
 address until the matching public key is in the
 keyring. `bootstrap.sh` imports the shipped
-`files/.gnupg/*.asc`; by hand it is:
+`files/.gnupg/*.asc` and marks them ultimately
+trusted; by hand it is:
 
 ```sh
 gpg --import ~/.gnupg/*.asc
+printf '%s:6:\n' "<fingerprint>" | gpg --import-ownertrust
 ```
+
+### Daily Operation
 
 Stop a stray `gpg` from clobbering the tunnel. Any
 `gpg` call starts a local agent when none answers,
@@ -158,57 +212,27 @@ the forwarded one and leaving a key-less agent in its
 place. The shipped `gpg.conf` sets `no-autostart` to
 prevent this, so a forward gap makes `gpg` fail
 loudly instead of replacing the tunnel. A local agent
-is only ever started explicitly (`.bashrc` or
-systemd), where one is actually wanted.
+is only started explicitly by `.bashrc`, and only
+off-SSH where one is actually wanted.
 
-The forward only binds at connection time, so
-reconnect after any change. To verify it is live:
+The forward binds when the SSH connection is
+established. A multiplexed connection reuses the
+existing master, so reconnecting does not re-arm
+it; instead, ask the live master to add the
+forward, from the laptop:
 
-- `gpg-connect-agent 'keyinfo --list' /bye` reports
-  restricted mode, not a list of keygrips.
+```sh
+ssh -O forward \
+  -R /run/user/1000/gnupg/S.gpg-agent:/run/user/1000/gnupg/S.gpg-agent.extra \
+  <host>
+```
+
+To verify it is live:
+
 - `gpg --list-secret-keys` shows the keys with a `>`
   stub.
 - `echo test | gpg --clearsign` succeeds and the
   pinentry prompt appears on the laptop.
-
-## Dotfiles Are Symlinks
-
-Files in `$HOME` such as `.bashrc`, `.gitconfig`,
-and `.vimrc` are symlinks into this repository
-under `files/`.
-
-**Do not copy or overwrite files in `$HOME`.**
-Edit the source in the dotfiles checkout instead.
-The symlink ensures `$HOME` sees the change
-immediately.
-
-The dotfiles repo is typically checked out at
-`~/projects/dotfiles`.
-
-## Sync
-
-`sync.sh` creates symlinks in `$HOME` pointing
-into `files/`. When a target already exists in
-`$HOME`:
-
-- **Regular file**: imported into `files/`, then
-  replaced with a symlink.
-- **Non-empty directory**: moved into `files/` and
-  replaced with a symlink.
-- **Existing symlink**: relinked if it points
-  somewhere else.
-
-`sync_ssh.sh` runs automatically after every sync.
-
-To re-sync after changes:
-
-```sh
-cd ~/projects/dotfiles
-./sync.sh
-```
-
-`bootstrap.sh` does the same but also initialises
-submodules and runs `git reset --hard` afterward.
 
 ## SSH Keys
 
@@ -222,10 +246,15 @@ after the key comment) and removed from
 
 ## Markdown Lint
 
-This repo enforces `markdownlint` on all markdown
-files via `pnpx markdownlint-cli`. Key rules:
+All markdown files in this repo must pass
+`markdownlint` (`pnpm dlx markdownlint-cli`).
+Nothing runs it automatically, so check before
+committing. Key rules:
 
-- 80-character line limit (tables are exempt)
+- 80-character line limit, code blocks included
+  (tables are exempt); wrap genuinely unbreakable
+  lines in a scoped `markdownlint-disable MD013`
+  comment pair
 - 2-space indent for nested lists
 - Blank lines around headings, lists, code blocks
 - No bare URLs; use `[text](url)` syntax
