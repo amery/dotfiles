@@ -7,6 +7,11 @@
 
 set -eu
 
+# Everything created here (authorized_keys, its temp, extracted .pub
+# captures) must stay private; sshd rejects a group-writable
+# authorized_keys under StrictModes.
+umask 077
+
 SSHDIR="$HOME/.ssh"
 
 set --
@@ -54,3 +59,8 @@ fi
 if ! diff -u "$ak" "$ak~"; then
 	mv "$ak~" "$ak"
 fi
+
+# Guarantee the final mode even when nothing changed: umask only sets it
+# on files this run creates, so a pre-existing group-writable file that
+# needs no rewrite would otherwise keep its mode and stay rejected.
+chmod 600 "$ak"
