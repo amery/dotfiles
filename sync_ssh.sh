@@ -14,6 +14,38 @@ umask 077
 
 SSHDIR="$HOME/.ssh"
 
+# keyname derives a filesystem-safe base name for an unrecognised key
+# line so the capture always has a writable filename. It scans past any
+# options prefix to the key-type token and prefers the trailing comment;
+# with no comment it falls back to the type and a checksum of the line.
+# The result is reduced to a plain name -- no separators, no hidden or
+# relative form -- and length-capped. Call it in a command substitution:
+# the set -f / set -- here must not disturb the caller's allowlist in $@.
+keyname() {
+	line=$1
+	set -f
+	# shellcheck disable=SC2086  # deliberate word-split of the key line
+	set -- $line
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		ssh-*|ecdsa-*|sk-*) break ;;
+		esac
+		shift
+	done
+	kt=${1:-key}
+	if [ $# -gt 2 ]; then
+		shift 2
+		name=$*
+	else
+		name="$kt-$(printf '%s' "$line" | cksum | cut -d' ' -f1)"
+	fi
+	name=$(printf '%s' "$name" | tr -c 'A-Za-z0-9._@-' '_' | cut -c1-64)
+	case "$name" in
+	''|.*|-*) name="key_$name" ;;
+	esac
+	printf '%s\n' "$name"
+}
+
 set --
 for x in "$SSHDIR"/*.pub; do
 	[ -e "$x" -o -L "$x" ] || continue
@@ -40,10 +72,7 @@ if [ -s "$ak" ]; then
 		done
 
 		if [ -z "$found" ]; then
-			name="$(echo "$l" | cut -d' ' -f3)"
-			if [ -n "$name" ]; then
-				echo "$l" > "$SSHDIR/$name.pub"
-			fi
+			echo "$l" > "$SSHDIR/$(keyname "$l").pub"
 		fi
 	done < "$ak" > "$ak~"
 else
