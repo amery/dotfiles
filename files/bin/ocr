@@ -1,0 +1,14 @@
+#!/bin/sh
+# ocr — Alibaba open-code-review, run fresh via `pnpm dlx` (no global install).
+#   Repo:   https://github.com/alibaba/open-code-review
+#   Config: ~/.opencodereview/config.json (persists across runs)
+#
+# pnpm dlx re-resolves the latest published version on each call and caches the
+# binary in the pnpm store, so there is no global install to go stale.
+# --allow-build lets the package's postinstall run under pnpm's script gate.
+#
+# Pin a version with OCR_VERSION, e.g.  OCR_VERSION=1.7.14 ocr version
+set -eu
+
+PKG="@alibaba-group/open-code-review${OCR_VERSION:+@$OCR_VERSION}"
+exec env OCR_NO_UPDATE=1 pnpm dlx --allow-build=@alibaba-group/open-code-review "$PKG" "$@"
