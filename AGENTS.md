@@ -153,14 +153,26 @@ set but `user.signingkey` is removed so commits
 are not signed with the wrong key. `git set-user
 --list` shows the available identities.
 
-## GPG Agent Forwarding
+## Sharing the GPG Agent
 
-On remote hosts the private keys are never copied.
-The laptop's `gpg-agent` is forwarded over SSH, so
-signing happens on the laptop while `git` runs on
-the remote.
+The private keys live only on the laptop that owns
+the `gpg-agent`. Every other environment borrows
+that agent rather than holding a copy of the keys,
+so signing always happens on the laptop. `.bashrc`
+launches a local agent only on the owning machine;
+`wants_gpg_agent` bows out in the two borrow
+scenarios below. The launch is idempotent, so any
+new terminal or tmux pane on the laptop re-arms the
+agent once it has died.
 
-### One-Time Setup
+### SSH Remotes
+
+On remote hosts the laptop's `gpg-agent` is
+forwarded over SSH, so signing happens on the
+laptop while `git` runs on the remote. The private
+keys are never copied.
+
+#### One-Time Setup
 
 On the client, forward the laptop's restricted
 `extra` socket onto the remote's standard socket
@@ -203,7 +215,7 @@ gpg --import ~/.gnupg/*.asc
 printf '%s:6:\n' "<fingerprint>" | gpg --import-ownertrust
 ```
 
-### Daily Operation
+#### Daily Operation
 
 Stop a stray `gpg` from clobbering the tunnel. Any
 `gpg` call starts a local agent when none answers,
@@ -212,8 +224,9 @@ the forwarded one and leaving a key-less agent in its
 place. The shipped `gpg.conf` sets `no-autostart` to
 prevent this, so a forward gap makes `gpg` fail
 loudly instead of replacing the tunnel. A local agent
-is only started explicitly by `.bashrc`, and only
-off-SSH where one is actually wanted.
+is only started explicitly by `.bashrc`, and only on
+the owning machine -- never on an SSH remote or inside
+a bind-mounted container.
 
 The forward binds when the SSH connection is
 established. A multiplexed connection reuses the
@@ -233,6 +246,26 @@ To verify it is live:
   stub.
 - `echo test | gpg --clearsign` succeeds and the
   pinentry prompt appears on the laptop.
+
+### Containers
+
+A container borrows the agent through a bind mount
+of the laptop's `/run/user/1000/gnupg` runtime
+directory. The directory is mounted, not the socket
+file, so an agent restart -- which recreates the
+socket inode -- is picked up without restarting the
+container. `wants_gpg_agent` finds the mount in
+`/proc/mounts` and skips the launch, so the
+container never starts a key-less agent of its own.
+
+Because the container only borrows, the laptop must
+have an agent running. An empty
+`/run/user/1000/gnupg` means the host agent has
+stopped: open a terminal on the laptop, or run
+`gpgconf --launch gpg-agent`, to arm it. As on a
+remote, import the public keys into the container
+keyring so `git set-user` can map an address to a
+key.
 
 ## SSH Keys
 

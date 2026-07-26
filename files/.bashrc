@@ -81,18 +81,37 @@ unset to_path
 
 # GPG
 #
+# wants_gpg_agent succeeds only on a machine that owns its gpg-agent, where a
+# local agent should be launched. Two independent scenarios borrow an agent
+# instead and must not start their own:
+#   - SSH remote: the laptop's agent is forwarded over the tunnel.
+#   - container:  the host's gnupg runtime dir is bind-mounted in.
+wants_gpg_agent() {
+	local sock_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/gnupg"
+
+	# remote: forwarded agent
+	case "${SSH_CONNECTION:-}" in
+	?*) return 1 ;;
+	esac
+
+	# container: bind-mounted agent
+	! grep -qsF " $sock_dir " /proc/mounts || return 1
+
+	return 0
+}
+
 if type -p gpgconf > /dev/null; then
 	export GPG_TTY=$(tty)
 	: "${GNUPGHOME:=$HOME/.gnupg}"
 	export GNUPGHOME
 	# gpg refuses a homedir that group/other can access
 	[ ! -d "$GNUPGHOME" ] || chmod go-rwx "$GNUPGHOME"
-	# only start a local agent off-SSH; forwarding hosts use the
-	# tunnelled agent (see .gnupg/gpg.conf no-autostart)
-	case "${SSH_CONNECTION:-}" in
-	"") gpgconf --launch gpg-agent ;;
-	esac
+	if wants_gpg_agent; then
+		gpgconf --launch gpg-agent
+	fi
 fi
+
+unset wants_gpg_agent
 
 # python aliases
 if [ -n "${PYTHON_VENV:-}" ]; then
