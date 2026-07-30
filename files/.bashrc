@@ -1,6 +1,7 @@
 # ~/.bashrc: executed by bash(1) for non-login shells.
 
 export LANG="en_GB.UTF-8"
+export LC_ALL="$LANG"
 
 # standardise $TERM
 case "${TERM:-}" in
