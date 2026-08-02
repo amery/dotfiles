@@ -7,7 +7,7 @@
 
 set -eu
 
-RUN_VERSION="1.24.1"
+RUN_VERSION="1.25.0"
 
 #
 #
@@ -32,6 +32,15 @@ ver_to_num() {
 	IFS=$oldifs
 	echo $(( ${1:-0} * 100000 + ${2:-0} * 100 + ${3:-0} ))
 }
+
+#
+# RUN_VERSION_NUM is RUN_VERSION folded through ver_to_num and exported so a
+# sourced run-hook.sh can gate on it directly — the soft alternative to
+# require_run_version. Compare against an encoded floor, e.g.
+# [ "${RUN_VERSION_NUM:-0}" -ge 102401 ]; a runtime too old to export it leaves
+# the guard reading 0, so the hook degrades quietly instead of aborting.
+#
+export RUN_VERSION_NUM="$(ver_to_num "$RUN_VERSION")"
 
 #
 # require_run_version <major.minor.patch>
@@ -558,7 +567,14 @@ builder_build() {
 builder_prepare() {
 	# pass-through environment
 	#
-	for x in $DOCKER_ENV_LABELS USER_IS_SUDO; do
+	# XDG_RUNTIME_DIR rides along unconditionally: it is not
+	# toolchain-specific, so it belongs here rather than in a per-image
+	# run-env label. UID parity between host and container means the
+	# forwarded /run/user/$UID matches what the entrypoint's
+	# make_runtime_dir creates and owns. On a host without it (no logind,
+	# or root) the value is empty, builder_gen_env drops it, and the
+	# login-time default in the entrypoint stands in.
+	for x in $DOCKER_ENV_LABELS USER_IS_SUDO XDG_RUNTIME_DIR; do
 		DOCKER_RUN_ENV="${DOCKER_RUN_ENV:+$DOCKER_RUN_ENV }$x"
 	done
 
