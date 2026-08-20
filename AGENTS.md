@@ -165,6 +165,30 @@ scenarios below. The launch is idempotent, so any
 new terminal or tmux pane on the laptop re-arms the
 agent once it has died.
 
+`gpg_agent_state` decides whether that launch is
+worth making, reporting `live`, `stale`, `absent`
+or `occupied`. The first three are cheap to judge,
+but `occupied` needs a clock: a socket something
+listens on and nobody answers on -- what the Dev
+Containers relay leaves behind when it outlives the
+agent it forwards to. Launching against one of
+those cannot work, and costs a fixed countdown
+(8s on gnupg 2.4.7) that every shell pays in turn,
+serialised on the spawn lock. So that state warns
+instead, naming `ss -xlp | grep S.gpg-agent` to
+identify the holder -- `node` for the relay,
+`sshd-session` for a forward, `gpg-agent` for a
+healthy one. It never unlinks the socket: the
+holder may be serving a running container, and
+unlinking a live agent socket is the very fault
+this guards against.
+
+Two gnupg behaviours the check has to work around.
+`gpg-connect-agent --no-autostart` exits 0 whether
+or not it reached an agent, so `OK` on stdout is
+the only liveness signal; and it imposes no connect
+timeout, so a silent socket hangs it indefinitely.
+
 ### SSH Remotes
 
 On remote hosts the laptop's `gpg-agent` is

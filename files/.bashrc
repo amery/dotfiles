@@ -101,6 +101,43 @@ wants_gpg_agent() {
 	return 0
 }
 
+# gpg_agent_state reports what sits behind the agent socket: live, stale,
+# absent, or occupied. Only `occupied` needs a clock -- a socket something
+# listens on but nobody answers on, as a Dev Containers relay leaves behind
+# when it outlives the agent it forwards to. gpg-connect-agent imposes no
+# connect timeout of its own, so launching against one of those spawns an
+# agent that cannot bind and then waits out a fixed countdown, paid once per
+# shell and serialised on the spawn lock. A missing `timeout` falls through
+# to `stale`, which is the launch-anyway behaviour this replaces.
+gpg_agent_state() {
+	local sock rc out
+
+	sock="$(gpgconf --list-dirs agent-socket)"
+	if [ ! -S "$sock" ]; then
+		echo absent
+		return 0
+	fi
+
+	# --no-autostart exits 0 whether or not it reached an agent, so the
+	# `OK` on stdout is the only liveness signal. `timeout` supplies the
+	# connect timeout gpg-connect-agent has none of.
+	rc=0
+	out="$(timeout 2 gpg-connect-agent --no-autostart NOP /bye \
+		2> /dev/null)" || rc=$?
+
+	case "$rc" in
+	124)
+		echo occupied
+		return 0
+		;;
+	esac
+
+	case "$out" in
+	OK*) echo live ;;
+	*) echo stale ;;
+	esac
+}
+
 if type -p gpgconf > /dev/null; then
 	export GPG_TTY=$(tty)
 	: "${GNUPGHOME:=$HOME/.gnupg}"
@@ -108,11 +145,18 @@ if type -p gpgconf > /dev/null; then
 	# gpg refuses a homedir that group/other can access
 	[ ! -d "$GNUPGHOME" ] || chmod go-rwx "$GNUPGHOME"
 	if wants_gpg_agent; then
-		gpgconf --launch gpg-agent
+		case "$(gpg_agent_state)" in
+		live) ;;
+		occupied)
+			echo "gpg-agent socket occupied but silent;" \
+				"not launching (ss -xlp | grep S.gpg-agent)" >&2
+			;;
+		*) gpgconf --launch gpg-agent ;;
+		esac
 	fi
 fi
 
-unset wants_gpg_agent
+unset wants_gpg_agent gpg_agent_state
 
 # python aliases
 if [ -n "${PYTHON_VENV:-}" ]; then
