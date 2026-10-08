@@ -80,26 +80,86 @@ at the root.
 
 Key scripts in `~/bin/`:
 
-| Script           | Purpose                      |
-|------------------|------------------------------|
-| `x`              | Run a workspace's `run.sh`   |
-| `icdiff`         | Side-by-side diff with color |
-| `git-icdiff`     | icdiff as git diff driver    |
-| `git-set-user`   | Set identity + signingkey    |
-| `colorize`       | Syntax-highlight any file    |
-| `pcat`           | Filter and colorize pipeline |
-| `vcs_update`     | Pull and rebase any VCS repo |
-| `mkgit`          | Init repo with remote        |
-| `repo-find`      | Find files in repo workspace |
-| `repo-grep`      | Grep across repo workspace   |
-| `repo-list`      | List git repos recursively   |
-| `repo-root`      | Print repo workspace root    |
-| `sshloop`        | Reconnecting SSH wrapper     |
-| `tmux-reattach`  | Attach or create tmux/screen |
-| `tmux-here`      | Per-directory tmux session   |
-| `getpem`         | Extract public key from TLS  |
+| Script                | Purpose                      |
+|-----------------------|------------------------------|
+| `x`                   | Run a workspace's `run.sh`   |
+| `icdiff`              | Side-by-side diff with color |
+| `git-icdiff`          | icdiff as git diff driver    |
+| `git-set-user`        | Set identity + signingkey    |
+| `colorize`            | Syntax-highlight any file    |
+| `pcat`                | Filter and colorize pipeline |
+| `vcs_update`          | Pull and rebase any VCS repo |
+| `mkgit`               | Init repo with remote        |
+| `repo-find`           | Find files in repo workspace |
+| `repo-grep`           | Grep across repo workspace   |
+| `repo-list`           | List git repos recursively   |
+| `repo-root`           | Print repo workspace root    |
+| `sshloop`             | Reconnecting SSH wrapper     |
+| `tmux-reattach`       | Attach or create tmux/screen |
+| `tmux-here`           | Per-directory tmux session   |
+| `getpem`              | Extract public key from TLS  |
+| `claude-memory-links` | Link memory to shared stores |
+| `claude-memory-map`   | Propose the memory store map |
 
 Run `ls ~/bin/` for the full list of scripts.
+
+## Claude Memory Stores
+
+Claude Code keys project memory on a slug of
+the repository's main checkout, whichever
+subdirectory or worktree a session starts in (a
+submodule's worktree gets the submodule's git
+directory under `.git/modules/` instead), or of
+the working directory outside a repository. So
+every clone of a repository, and each identity,
+grows a memory of its own. `~/.claude/stores/`
+holds one store per repository instead, and
+`~/.claude/stores/MAP` maps each session
+directory (the slug under `projects/`) to its
+store, one `slug store` pair per line.
+
+`claude-memory-links` applies the map. It
+replaces each mapped session directory's `memory`,
+under `~/.claude` and `~/.claude/micrologic`, with
+a relative symlink into the store, moving any
+memories already there across. Without `--apply`
+it only reports:
+
+```sh
+claude-memory-links          # report the plan
+claude-memory-links --apply  # make the changes
+```
+
+A store whose memories sit in more than one
+directory, counting the store itself and the
+session directories, is reported as `MERGE` and
+left alone: merge the `MEMORY.md` indexes by
+hand, leave one directory populated, then
+re-run. A link that points elsewhere is
+reported as `RELINK` and replaced, unless what
+it reaches holds memories of its own: then it is
+reported as `WRONG` and left for the same merge
+by hand. A `memory` that is neither a directory
+nor a link is reported as `BLOCKED`, to be moved
+aside by hand. Any of the three leaves the
+script exiting 2, in a dry run as with
+`--apply`. A link to a store that does not
+exist is reported as `BROKEN`, and `--apply`
+creates the store.
+
+`claude-memory-map` proposes map lines for the
+session directories that have a `memory`
+directory, naming each store after the
+checkout's path under `src/` or its `origin`
+remote. A slug it cannot resolve to a directory
+on this machine is listed as `# UNMAPPED`. The
+map stays curated by hand, so compare its
+proposal with `MAP` rather than replacing it:
+
+```sh
+claude-memory-map        # the evidence per store
+claude-memory-map --map  # proposed map lines
+```
 
 ## Shell Conventions
 
@@ -114,6 +174,9 @@ scripts in this repository:
 - Use `case` over `if/elif` for string matching
 - Quote all variable expansions
 - Target POSIX `sh`, not Bash
+- Negate a bracket pattern with `[!.]`, not
+  `[^.]`: dash reads `^` as a literal, so
+  `.[^.]*` matches `..` there
 - Scripts should pass `shellcheck`
 
 ## Git Commit Style

@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""claude-memory-map [--map] -- propose a slug-to-store map.
+
+The companion to claude-memory-links, which applies
+~/.claude/stores/MAP; this only proposes one, since the map
+itself is hand-curated. Run with --map to emit map lines, or
+bare for a per-store report naming the path and the evidence
+behind each name.
+
+Reads the session directories that have a memory directory, in
+both Claude configuration directories, resolves each slug back
+to a real path, and names the store after the checkout's
+`src/`-relative path (`darvaza.org/x`, `github.com/poupe-ui/poupe`),
+falling back to the git remote for repositories that are not
+under an `src/` root. Claude keys a worktree of a submodule on
+the submodule's git directory under `.git/modules/`; such a slug
+resolves to the submodule's checkout in the superproject, so it
+lands in the same store as the submodule itself. A slug it
+cannot resolve, and cannot find in HAND_NAMED, is emitted as a
+`# UNMAPPED` comment to be named by hand.
+"""
+
+import os
+import re
+import subprocess
+import sys
+from urllib.parse import urlsplit
+
+HOME = os.path.expanduser('~')
+CONFIGS = {
+    'personal': f'{HOME}/.claude',
+    'micrologic': f'{HOME}/.claude/micrologic',
+}
+STORES = f'{HOME}/.claude/stores'
+ROOTS = [f'{HOME}/projects', f'{HOME}/Documents']
+SKIP = {'node_modules', '.pnpm-store', '.output', '.nuxt', 'vendor',
+        'dist', '.venv', '__pycache__'}
+
+
+def memories(path):
+    """The number of memories in a directory, its index aside."""
+    return len([f for f in os.listdir(path) if f != 'MEMORY.md'])
+
+
+def populated(path):
+    """True when a directory holds any entry, its index included, as
+    claude-memory-links counts it for a merge."""
+    return bool(os.listdir(path))
+
+
+def slugify(path):
+    return path.replace('/', '-').replace('.', '-')
+
+
+def walk_dirs():
+    """Slugified path -> real path, for every plausible session dir."""
+    found = {HOME: slugify(HOME)}
+    for root in ROOTS:
+        for base, dirs, _ in os.walk(root):
+            depth = base[len(root):].count('/')
+            if depth >= 8:
+                dirs[:] = []
+                continue
+            dirs[:] = [d for d in dirs if d not in SKIP]
+            found[base] = slugify(base)
+    return {slug: path for path, slug in found.items()}
+
+
+def store_from_path(path):
+    """`src/`-relative path, else the git remote's host/org/repo."""
+    m = re.search(r'/src/(.+)$', path)
+    if m:
+        return m.group(1), 'src-relative'
+    return read_remote(path)
+
+
+def git_dir_superproject(path):
+    """Strip a `.git/modules/...` slug back to its worktree."""
+    parts = path.split('/')
+    if '.git' not in parts:
+        return None
+    head = parts[:parts.index('.git')]
+    tail = [p for p in parts[parts.index('.git') + 1:] if p != 'modules']
+    return '/'.join(head + tail)
+
+
+def read_remote(path):
+    cmd = ['git', '-C', path, 'remote', 'get-url', 'origin']
+    out = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    url = out.stdout.strip()
+    if '://' in url:
+        # drops any user and port
+        parts = urlsplit(url)
+        host, repo = parts.hostname, parts.path
+    else:
+        # scp-like [user@]host:path; a local path has no host
+        host, _, repo = url.rpartition('@')[2].partition(':')
+    repo = re.sub(r'\.git$', '', repo.strip('/'))
+    if not host or not repo:
+        return None, None
+    return f'{host}/{repo}', 'git remote'
+
+
+def stores():
+    slugmap = walk_dirs()
+    rows = []
+    for ident, cfg in CONFIGS.items():
+        pdir = os.path.join(cfg, 'projects')
+        if not os.path.isdir(pdir):
+            continue
+        for slug in sorted(os.listdir(pdir)):
+            mem = os.path.join(pdir, slug, 'memory')
+            if not os.path.isdir(mem):
+                continue
+            count = memories(mem)
+            path = slugmap.get(slug)
+            note = '' if path else 'UNRESOLVED'
+            store, how = (None, None)
+            if path:
+                worktree = git_dir_superproject(path)
+                if worktree:
+                    note = f'git-dir slug -> {worktree}'
+                    path = worktree
+                store, how = store_from_path(path)
+            rows.append((ident, slug, count, path or '', store or '',
+                         how or '', note))
+    return rows
+
+
+# Slugs no repository identity accounts for. They embed $HOME, so
+# on another machine they simply fall through to # UNMAPPED.
+HAND_NAMED = {
+    '-home-amery': 'machine/p14s',
+    '-home-amery-Documents-AS-IT': 'as/it',
+    '-home-amery-projects-poupe-env-src-github-com-poupe-ui-apptly-website':
+        'github.com/poupe-ui/apptly-website',
+}
+
+
+def emit_map(rows):
+    """Print the map file: one `slug store` line per session directory."""
+    seen = {}
+    holders = {}
+    unmapped = []
+    for ident, slug, count, _, store, _, _ in rows:
+        store = store or HAND_NAMED.get(slug)
+        if not store:
+            if slug not in unmapped:
+                unmapped.append(slug)
+            continue
+        # the map is identity-independent: one line per slug, even
+        # when both configuration directories carry that session
+        # directory
+        slugs = seen.setdefault(store, [])
+        if slug not in slugs:
+            slugs.append(slug)
+        # keyed on the real directory, so memory directories linked
+        # into one store count once
+        mem = os.path.join(CONFIGS[ident], 'projects', slug, 'memory')
+        if populated(mem):
+            holders.setdefault(store, {})[os.path.realpath(mem)] = count
+    for slug in unmapped:
+        print(f'# UNMAPPED {slug}')
+    width = max((len(s) for slugs in seen.values() for s in slugs),
+                default=0)
+    for store in sorted(seen):
+        held = holders.get(store, {})
+        sdir = os.path.realpath(os.path.join(STORES, store))
+        if sdir not in held and os.path.isdir(sdir) and populated(sdir):
+            held[sdir] = memories(sdir)
+        if len(held) > 1:
+            print(f'# {store}: {len(held)} directories hold memories '
+                  f'({sum(held.values())} in all); merge the indexes '
+                  f'by hand')
+        for slug in sorted(seen[store]):
+            print(f'{slug:{width}}  {store}')
+        print()
+
+
+def main():
+    rows = stores()
+    if '--map' in sys.argv:
+        emit_map(rows)
+        return
+    width = max((len(r[1]) for r in rows), default=0)
+    by_store = {}
+    for ident, slug, count, path, store, how, note in rows:
+        if not store and slug in HAND_NAMED:
+            store, how = HAND_NAMED[slug], 'hand-named'
+        key = store or f'?{slug}'
+        by_store.setdefault(key, []).append(
+            (ident, slug, count, path, how, note))
+    for store in sorted(by_store):
+        print(f'== {store}')
+        for ident, slug, count, path, how, note in by_store[store]:
+            extra = f'  [{note}]' if note else ''
+            print(f'   {ident:10} {count:4}  {slug:{width}}  '
+                  f'({how}){extra}')
+            print(f'   {"":10} {"":4}  path: {path}')
+
+
+if __name__ == '__main__':
+    main()

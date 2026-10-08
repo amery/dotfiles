@@ -1,0 +1,370 @@
+#!/bin/sh
+#
+# claude-memory-links [--apply] [map] -- point session memory
+# directories at shared stores.
+#
+# Claude keys project memory on $CLAUDE_CONFIG_DIR plus a slug of
+# the repository's main checkout, whichever subdirectory or
+# worktree a session starts in, or of the working directory
+# outside a repository; a submodule's worktree gets the
+# submodule's git directory under .git/modules/ instead. So a
+# repository cloned into several workspaces accumulates a separate
+# store per clone and per identity. This replaces each mapped
+# session directory's `memory` with a relative symlink into a
+# single store under ~/.claude/stores/, so every clone of a
+# repository, under both identities, reads and writes the same
+# memories.
+#
+# Reports the plan and changes nothing unless --apply is given.
+#
+# A store whose memories sit in more than one directory, counting
+# the store itself and the session directories, is reported and
+# left untouched: merging two MEMORY.md indexes is a reading job,
+# not a scripting one, and picking a winner by map order would
+# bury the larger set. Merge by hand, then re-run.
+#
+# An existing link is OK when it names its store and reaches it.
+# One that names its store but reaches nothing is BROKEN, and the
+# store is created. One naming anything else is replaced (RELINK),
+# unless what it reaches holds memories of its own: that is WRONG,
+# left alone for the same merge by hand. A `memory` that is
+# neither a directory nor a link is BLOCKED, left to be moved aside
+# by hand.
+#
+# Exits 2 when a fix by hand is left, in a dry run as with --apply,
+# and 1 on an error.
+#
+# CLAUDE_ROOT and CONFIGS override the defaults; CONFIGS holds one
+# configuration directory per line, one per identity, each under
+# CLAUDE_ROOT.
+# shellcheck disable=SC3043  # local is universally available
+# shellcheck disable=SC2166  # -a and -o read better than && and ||
+set -eu
+
+CLAUDE_ROOT="${CLAUDE_ROOT:-$HOME/.claude}"
+STORES="$CLAUDE_ROOT/stores"
+CONFIGS="${CONFIGS:-$CLAUDE_ROOT
+$CLAUDE_ROOT/micrologic}"
+APPLY=no
+MAP_LINES=""
+# set when a fix by hand is left, for the exit status
+HAND_FIX=no
+
+die() {
+	echo "claude-memory-links: $*" >&2
+	exit 1
+}
+
+# up_prefix <dir> -- "../" per component between CLAUDE_ROOT and
+# <dir>, so the symlink target stays relative to the tree.
+up_prefix() {
+	local rel prefix
+	rel="${1#"$CLAUDE_ROOT"/}"
+	prefix=""
+	while [ "$rel" != "${rel#*/}" ]; do
+		prefix="$prefix../"
+		rel="${rel#*/}"
+	done
+	echo "$prefix../"
+}
+
+# populated <dir> -- true when the directory holds any entry, a
+# broken link included.
+populated() {
+	local entry
+	for entry in "$1"/* "$1"/.[!.]*; do
+		if [ -e "$entry" -o -L "$entry" ]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+# count_lines <text> -- the number of non-empty lines in <text>.
+count_lines() {
+	local n line
+	n=0
+	while IFS= read -r line; do
+		if [ -n "$line" ]; then
+			n=$((n + 1))
+		fi
+	done <<EOF
+$1
+EOF
+	echo "$n"
+}
+
+# load_map <file> -- the map without blanks or comments, one
+# "slug store" per line. Read once; read splits each line on blanks,
+# and anything past the store, or a slug already mapped, is refused,
+# so the loops below can read it back a line at a time.
+load_map() {
+	local slug store rest seen
+	seen=" "
+	# read fails on a last line with no newline, but still fills
+	# the variables
+	while read -r slug store rest || [ -n "$slug" ]; do
+		case "$slug" in
+		'' | \#*) continue ;;
+		esac
+		[ -n "$store" ] || die "no store for slug $slug"
+		[ -z "$rest" ] || die "more than a store for slug $slug"
+		case "$seen" in
+		*" $slug "*) die "slug $slug mapped more than once" ;;
+		esac
+		seen="$seen$slug "
+		printf '%s %s\n' "$slug" "$store"
+	done <"$1"
+}
+
+# sources <store> <config>... -- memory directories of the session
+# directories mapped to <store> that already hold memories, one per
+# line.
+sources() {
+	local store slug mapped cfg mem
+	store="$1"
+	shift
+	while read -r slug mapped; do
+		if [ "$mapped" = "$store" ]; then
+			for cfg; do
+				mem="$cfg/projects/$slug/memory"
+				if [ -d "$mem" -a ! -L "$mem" ]; then
+					if populated "$mem"; then
+						echo "$mem"
+					fi
+				fi
+			done
+		fi
+	done <<EOF
+$MAP_LINES
+EOF
+}
+
+# holders <store> <config>... -- directories holding memories for
+# <store>, one per line: the store itself once populated, then
+# sources.
+holders() {
+	if [ -d "$STORES/$1" ]; then
+		if populated "$STORES/$1"; then
+			echo "$STORES/$1"
+		fi
+	fi
+	sources "$@"
+}
+
+# migrate <memory-dir> <store-dir> -- move every entry across.
+migrate() {
+	local entry
+	for entry in "$1"/* "$1"/.[!.]*; do
+		if [ -e "$entry" -o -L "$entry" ]; then
+			mv -n "$entry" "$2/"
+		fi
+	done
+}
+
+# abspath <path> -- the absolute path of <path>, every link resolved.
+abspath() {
+	readlink -f "$1"
+}
+
+# same_dir <a> <b> -- true when both paths reach the same directory.
+same_dir() {
+	local a b
+	if [ ! -d "$1" -o ! -d "$2" ]; then
+		return 1
+	fi
+	a="$(abspath "$1")"
+	b="$(abspath "$2")"
+	[ "$a" = "$b" ]
+}
+
+# holds_elsewhere <memory> <store-dir> -- true when the link
+# <memory> reaches a directory other than the store, holding
+# memories.
+holds_elsewhere() {
+	if [ ! -d "$1" ]; then
+		return 1
+	fi
+	if same_dir "$1" "$2"; then
+		return 1
+	fi
+	populated "$1"
+}
+
+# relink <memory> <target> <store-dir> -- <memory> is a link that
+# points elsewhere. Replace it, unless what it reaches holds
+# memories of its own: those are left for a merge by hand.
+relink() {
+	local mem target store_dir old
+	mem="$1"
+	target="$2"
+	store_dir="$3"
+	old="$(readlink "$mem")"
+
+	if holds_elsewhere "$mem" "$store_dir"; then
+		echo "WRONG    $mem -> $old"
+		echo "         expected $target; merge its memories into"
+		echo "         the store by hand, then re-run"
+		HAND_FIX=yes
+		return 0
+	fi
+
+	echo "RELINK   $mem -> $target"
+	echo "         was $old"
+	if [ "$APPLY" = yes ]; then
+		mkdir -p "$store_dir"
+		rm "$mem"
+		ln -s "$target" "$mem"
+	fi
+}
+
+# link_one <session-dir> <store> -- one mapped session directory.
+link_one() {
+	local sdir store target store_dir mem
+	sdir="$1"
+	store="$2"
+	store_dir="$STORES/$store"
+	mem="$sdir/memory"
+	target="$(up_prefix "$sdir")stores/$store"
+
+	if [ -L "$mem" ]; then
+		if [ "$(readlink "$mem")" != "$target" ]; then
+			relink "$mem" "$target" "$store_dir"
+		elif [ -d "$mem" ]; then
+			echo "OK       $mem"
+		else
+			# the right link, but the store is missing
+			echo "BROKEN   $mem -> $target"
+			if [ "$APPLY" = yes ]; then
+				mkdir -p "$store_dir"
+			fi
+		fi
+		return 0
+	fi
+
+	if [ -e "$mem" -a ! -d "$mem" ]; then
+		echo "BLOCKED  $mem"
+		echo "         neither a directory nor a link; move it"
+		echo "         aside by hand, then re-run"
+		HAND_FIX=yes
+		return 0
+	fi
+
+	if [ -d "$mem" ]; then
+		if populated "$mem"; then
+			echo "MIGRATE  $mem -> $target"
+			if [ "$APPLY" = yes ]; then
+				mkdir -p "$store_dir"
+				migrate "$mem" "$store_dir"
+				rmdir "$mem"
+				ln -s "$target" "$mem"
+			fi
+			return 0
+		fi
+	fi
+
+	echo "LINK     $mem -> $target"
+	if [ "$APPLY" = yes ]; then
+		mkdir -p "$store_dir" "$sdir"
+		if [ -d "$mem" ]; then
+			rmdir "$mem"
+		fi
+		ln -s "$target" "$mem"
+	fi
+}
+
+# report_merge <store> <holders> -- name the directories to merge,
+# given one per line.
+report_merge() {
+	local src
+	echo "MERGE    $1 has several populated directories:"
+	while IFS= read -r src; do
+		echo "         $src"
+	done <<EOF
+$2
+EOF
+	echo "         merge their MEMORY.md indexes by hand, leave one"
+	echo "         directory populated, then re-run"
+	HAND_FIX=yes
+}
+
+main() {
+	local map cfg slug store srcs merged
+
+	map=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--apply) APPLY=yes ;;
+		-h | --help)
+			echo "usage: claude-memory-links [--apply] [map]"
+			return 0
+			;;
+		-*) die "unknown option: $1" ;;
+		*)
+			[ -z "$map" ] || die "more than one map: $map, $1"
+			map="$1"
+			;;
+		esac
+		shift
+	done
+	map="${map:-$STORES/MAP}"
+
+	[ -f "$map" ] || die "no map at $map"
+	if [ "$APPLY" != yes ]; then
+		echo "# dry run; pass --apply to make these changes"
+	fi
+
+	MAP_LINES="$(load_map "$map")"
+
+	# the arguments are spent; they now hold the configuration
+	# directories, one per identity, refused outside CLAUDE_ROOT as
+	# up_prefix builds the link targets from there
+	while IFS= read -r cfg; do
+		if [ -n "$cfg" ]; then
+			case "$cfg" in
+			"$CLAUDE_ROOT" | "$CLAUDE_ROOT"/*) ;;
+			*) die "$cfg is outside $CLAUDE_ROOT" ;;
+			esac
+			set -- "$@" "$cfg"
+		fi
+	done <<EOF
+$CONFIGS
+EOF
+
+	merged=" "
+	while read -r slug store; do
+		if [ -z "$slug" ]; then
+			# an empty map leaves one empty line
+			continue
+		fi
+
+		srcs="$(holders "$store" "$@")"
+		if [ "$(count_lines "$srcs")" -gt 1 ]; then
+			case "$merged" in
+			*" $store "*) ;;
+			*)
+				report_merge "$store" "$srcs"
+				merged="$merged$store "
+				;;
+			esac
+		else
+			for cfg; do
+				# every identity gets the link, including
+				# for projects it has never opened: the
+				# harness would otherwise create a private
+				# memory directory on its first session
+				if [ -d "$cfg" ]; then
+					link_one "$cfg/projects/$slug" "$store"
+				fi
+			done
+		fi
+	done <<EOF
+$MAP_LINES
+EOF
+
+	if [ "$HAND_FIX" = yes ]; then
+		exit 2
+	fi
+}
+
+main "$@"
