@@ -2,7 +2,7 @@
   "provider": "ollama",
   "custom_providers": {
     "ollama": {
-      "url": "http://192.168.24.23:11434/v1",
+      "url": "http://10.1.16.23:11434/v1",
       "protocol": "openai",
       "model": "qwen3-coder:30b",
       "api_key": "ollama",
