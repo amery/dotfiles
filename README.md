@@ -124,10 +124,13 @@ git submodule update --init
 
 `run.sh` wraps `update.sh` and `sync.sh` for
 unattended use. `update.sh` fetches from the
-tracking remote and exits early if nothing
-changed. Otherwise it stashes local changes,
-rebases, updates submodules, pops the stash,
-then runs `sync.sh`.
+tracking remote and exits early, successfully,
+if nothing changed. Otherwise it rebases,
+carrying local changes across, updates
+submodules, then runs `sync.sh`. A conflict
+with local commits or local changes stops it
+before `sync.sh`, and stops each later run
+until it is resolved.
 
 ## System Configs
 
